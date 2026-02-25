@@ -1,0 +1,16 @@
+openai
+pypdf
+python-docx
+python-pptx
+pandas
+pillow
+python-dotenv
+fastapi
+uvicorn
+celery
+redis
+sqlalchemy
+psycopg2-binary
+google-auth
+google-auth-oauthlib
+google-api-python-client
