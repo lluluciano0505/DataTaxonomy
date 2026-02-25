@@ -1,0 +1,13 @@
+# Environment variables — never upload
+.env
+
+# Output files
+*.csv
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# macOS
+.DS_Store
