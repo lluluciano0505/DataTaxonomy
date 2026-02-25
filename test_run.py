@@ -6,14 +6,23 @@ Run from the 'urban-classifier/' root directory:
 
 import os
 from pathlib import Path
+from dotenv import load_dotenv
+
+# ── Load environment variables from .env ─────────────────────────────────
+load_dotenv()
 
 # --- Import core pipeline functions ---
 from core.pipeline import build_config, run
 
-# ── LLM Settings (Direct Injection) ──────────────────────────────────────
-# Note: Using direct assignment to ensure the pipeline receives the key
-API_KEY = "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"
-MODEL   = "google/gemini-2.0-flash-001"
+# ── LLM Settings (from .env) ──────────────────────────────────────────────
+API_KEY = os.getenv("OPENROUTER_API_KEY")
+MODEL   = os.getenv("MODEL", "google/gemini-2.0-flash-001")
+
+if not API_KEY:
+    raise EnvironmentError(
+        "❌ OPENROUTER_API_KEY not found.\n"
+        "   Please create a .env file with your key, or set the environment variable."
+    )
 
 # ── Project Configuration ────────────────────────────────────────────────
 PROJECT = {
@@ -33,7 +42,6 @@ INPUT_PATH = Path.home() / "Desktop" / "Henning Larsen" / "2022Masterplan"
 OUTPUT_CSV = Path("test_output.csv")
 
 # ── Build Config ─────────────────────────────────────────────────────────
-# We pass the API_KEY and MODEL directly here
 config = build_config(
     project = PROJECT,
     model   = MODEL,
@@ -44,13 +52,13 @@ config = build_config(
 if __name__ == "__main__":
     print(f"--- Urban Classifier Test Run ---")
     print(f"Target Model: {MODEL}")
-    
+
     if not INPUT_PATH.exists():
         print(f"❌ Error: Path not found at {INPUT_PATH}")
         print("   Please check if the '2022Masterplan' folder is on your Desktop.")
     else:
         print(f"🚀 Processing 20 files from: {INPUT_PATH.name}...")
-        
+
         try:
             summary = run(
                 input_path = INPUT_PATH,
@@ -60,7 +68,7 @@ if __name__ == "__main__":
             )
             print(f"✅ Success! Results saved to: {OUTPUT_CSV}")
             print(f"📝 Summary: {summary}")
-            
+
         except Exception as e:
             print(f"❌ An error occurred during the run: {e}")
             print("   Check your internet connection or API quota.")
