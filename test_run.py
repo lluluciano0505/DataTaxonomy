@@ -57,14 +57,14 @@ if __name__ == "__main__":
         print(f"❌ Error: Path not found at {INPUT_PATH}")
         print("   Please check if the '2022Masterplan' folder is on your Desktop.")
     else:
-        print(f"🚀 Processing 20 files from: {INPUT_PATH.name}...")
+        print(f"🚀 Processing 400 files from: {INPUT_PATH.name}...")
 
         try:
             summary = run(
                 input_path = INPUT_PATH,
                 output_csv = OUTPUT_CSV,
                 config     = config,
-                sample_n   = 20,
+                sample_n   = 400,
             )
             print(f"✅ Success! Results saved to: {OUTPUT_CSV}")
             print(f"📝 Summary: {summary}")
