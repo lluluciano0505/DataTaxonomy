@@ -16,10 +16,10 @@ from .layer3 import layer3_trust
 SUPPORTED_FORMATS = {
     ".pdf", ".docx", ".doc", ".txt", ".pptx",
     ".xlsx", ".xls", ".csv", ".json",
-    ".dwg", ".dxf", ".ifc", ".rvt",
-    ".jpg", ".jpeg", ".png", ".tiff", ".tif",
-    ".shp", ".geojson", ".kml",
-    ".eml", ".msg", ".zip",
+    ".dwg", ".dxf", ".dwf", ".ifc", ".rvt", ".nwd",
+    ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".mp4", ".mov",
+    ".shp", ".geojson", ".kml", ".gpkg",
+    ".eml", ".msg", ".zip", ".7z", ".rar",
 }
 
 # ── CSV output columns ────────────────────────────────────────────────────
@@ -30,7 +30,7 @@ FIELDNAMES = [
     "asset_type", "short_summary",
     "governance", "confidentiality", "confidence",
     "age_warning", "risk_level", "action", "review_reasons",
-    "llm_status", "processed_at",
+    "_reasoning", "llm_status", "processed_at",
 ]
 
 
@@ -73,18 +73,24 @@ def build_config(project: dict, model: str, api_key: str) -> dict:
 
 
 # ── Single file processor ─────────────────────────────────────────────────
-def process_file(file_path: Path, client: OpenAI, config: dict) -> dict:
+def process_file(file_path: Path, client: OpenAI, config: dict, input_path: Optional[Path] = None) -> dict:
     """
     Runs all three layers on a single file.
     Returns a flat dict ready to be written as a CSV row.
+
+    input_path — project root used to compute relative folder chains for Layer 2.
+    When called via run(), this is injected automatically from config["input_path"].
+    When called directly, pass it explicitly or it falls back to config["input_path"]
+    if set, otherwise defaults to file_path.parent.
     """
+    resolved_input_path = input_path or config.get("input_path") or file_path.parent
     l1 = layer1_technical(file_path)
 
     l2 = layer2_domain(
         meta            = l1,
         client          = client,
         model           = config["model"],
-        input_path      = config["input_path"],
+        input_path      = resolved_input_path,
         project_context = config["project_context"],
         temperature     = config["temperature"],
     )
@@ -125,6 +131,7 @@ def process_file(file_path: Path, client: OpenAI, config: dict) -> dict:
         "action":              l3["action"],
         "review_reasons":      l3["review_reasons"],
         # Meta
+        "_reasoning":          l2.get("_reasoning", ""),
         "llm_status":          llm_status,
         "processed_at":        datetime.now().strftime("%Y-%m-%d %H:%M"),
     }

@@ -403,7 +403,7 @@ def layer2_domain(
     filename_signals_block = _format_filename_signals(meta)
     lc_hint               = _lifecycle_hint(meta)
     lifecycle_hint_str    = (
-        f"Suggested: {lc_hint}  (from status tag '{meta.get('filename_signals', {}).get('status_tag', '')}')"
+        f"Suggested: {lc_hint}  (from status tag '{(meta.get('filename_signals') or {}).get('status_tag', '')}')"
         if lc_hint else
         "No status-tag hint available — infer from folder chain and content."
     )

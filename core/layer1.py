@@ -226,7 +226,7 @@ def _extract_filename_signals(filename: str) -> dict:
     # Status tag
     status = None
     for tag in _STATUS_TAGS:
-        if re.search(r"(?<![A-Z])" + re.escape(tag.replace(" ", "[_ -]?")) + r"(?![A-Z])", stem):
+        if re.search(r"(?<![A-Z])" + re.escape(tag).replace(r"\ ", r"[_ -]?") + r"(?![A-Z])", stem):
             status = tag
             break
 

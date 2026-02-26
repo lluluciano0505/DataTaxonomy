@@ -29,7 +29,9 @@ def layer3_trust(
 
     try:
         raw_year     = layer2.get("year") or meta.get("year")
-        y            = int(raw_year or 0)
+        # Strip Layer 1 mtime annotation (e.g. "2022 (mtime)") before parsing
+        raw_year_str = str(raw_year).split()[0] if raw_year else "0"
+        y            = int(raw_year_str or 0)
         current_year = datetime.now().year
         if 1900 < y <= current_year:
             age_years = current_year - y
