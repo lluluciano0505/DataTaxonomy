@@ -66,6 +66,81 @@ def _lifecycle_hint(meta: dict) -> str | None:
     return _STATUS_TO_LIFECYCLE_HINT.get(tag)
 
 
+# ── Data formats that always → asset_type = Data ─────────────────────────
+_HARD_DATA_FORMATS = {
+    "CSV", "XLSX", "XLS", "JSON", "SHP", "GEOJSON", "KML", "GPKG",
+}
+
+_DATA_NAME_SIGNALS = [
+    "data", "dataset", "statistics", "survey", "census", "inventory",
+    "register", "schedule", "matrix", "gis", "layer", "export", "analysis",
+    "measurement", "count", "index", "database",
+]
+
+def _asset_type_hint(meta: dict) -> str | None:
+    """
+    Pre-compute asset_type from format + is_data_hint + filename.
+    Returns 'Data', 'Drawing', or None (let LLM decide).
+    """
+    fmt      = (meta.get("format") or "").upper()
+    hint     = meta.get("is_data_hint", "Unlikely")
+    path_low = (meta.get("file_path") or "").lower()
+    filename = (meta.get("filename") or "").lower()
+
+    if fmt in _HARD_DATA_FORMATS:
+        return "Data"
+
+    if fmt in {"DWG", "DXF", "RVT", "IFC", "NWD"}:
+        return "Drawing"
+
+    if hint == "Likely":
+        combined = path_low + " " + filename
+        if any(k in combined for k in _DATA_NAME_SIGNALS):
+            return "Data"
+        return "Data"
+
+    return None
+
+
+# ── Confidentiality keyword maps ──────────────────────────────────────────
+_CONFIDENTIAL_KEYWORDS = [
+    "contract", "contracts", "agreement", "nda", "loa", "loi", "mou",
+    "fee", "fees", "budget", "budgets", "cost", "costs", "pricing",
+    "invoice", "invoices", "payment", "payments", "financial", "finance",
+    "salary", "salaries", "remuneration",
+    "legal", "litigation", "arbitration", "dispute",
+    "personal", "private", "confidential",
+    "tender_price", "bid_price", "rate_card",
+]
+
+_SENSITIVE_KEYWORDS = [
+    "internal", "draft", "wip", "memo", "minutes", "meeting_minutes",
+    "rfi", "transmittal", "correspondence",
+    "staff", "personnel", "hr", "preliminary",
+]
+
+def _confidentiality_hint(meta: dict) -> str | None:
+    """
+    Pre-compute confidentiality from filename + folder path keywords.
+    Returns 'Confidential', 'Sensitive', or None (let LLM decide).
+    """
+    filename  = (meta.get("filename") or "").lower()
+    path_low  = (meta.get("file_path") or "").lower()
+    combined  = filename + " " + path_low
+    seg_str   = " ".join(s.lower() for s in (meta.get("path_segments") or []))
+
+    if any(k in combined for k in _CONFIDENTIAL_KEYWORDS):
+        return "Confidential"
+    if any(k in seg_str for k in _CONFIDENTIAL_KEYWORDS):
+        return "Confidential"
+    if any(k in combined for k in _SENSITIVE_KEYWORDS):
+        return "Sensitive"
+    if any(k in seg_str for k in _SENSITIVE_KEYWORDS):
+        return "Sensitive"
+    return None
+
+
+
 def _format_path_segments(meta: dict, input_path: Path, file_path: Path) -> str:
     """
     Return a human-readable folder chain string.
@@ -150,13 +225,24 @@ LIFECYCLE HINT  (pre-computed from status tag)
   content clearly contradicts it.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-DATA HINT  (pre-computed by Layer 1)
+ASSET TYPE HINT  (pre-computed from format + Layer 1 data signals)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  {is_data_hint}
-  Likely = format/filename strongly indicate a structured dataset
-  Possible = content keywords suggest data, not conclusive
-  Unlikely = no data signals found
-  Override this if you are confident the rule engine was wrong.
+  {asset_type_hint_str}
+
+  This hint was computed from file format and keyword analysis BEFORE this call.
+  Treat it as a strong default for asset_type.
+  Override ONLY if the content sample clearly shows it is wrong.
+  Raw Layer 1 data signal: {is_data_hint}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONFIDENTIALITY HINT  (pre-computed from filename + folder keywords)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  {confidentiality_hint_str}
+
+  This hint was computed by matching confidentiality keywords in the filename
+  and folder path (contract, fee, budget, nda, legal, invoice, draft, wip, memo...).
+  Treat it as a strong default for confidentiality.
+  Override ONLY if the content sample clearly contradicts it.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 CONTENT SAMPLE
@@ -301,11 +387,27 @@ GOVERNANCE SIGNALS:
 
 ─── CONFIDENTIALITY ──────────────────────────────────────────────────────
 Pick one:
-  Confidential  — contracts, fees, budgets, private correspondence, legal agreements
-  Sensitive     — draft reports, internal memos, WIP coordination files
-  Standard      — general project files, drawings, reports, public data
+  Confidential  — contracts, fee proposals, budgets, cost plans, legal agreements,
+                  NDAs, LOAs, LOIs, MoUs, invoices, payment records, financial models,
+                  HR / personnel files, private correspondence, bid prices
+  Sensitive     — internal draft reports, WIP coordination files, meeting minutes,
+                  RFIs, transmittals, internal memos, staff-facing documents,
+                  preliminary / pre-design studies not yet issued externally
+  Standard      — issued drawings, public reports, technical specs, reference data,
+                  regulatory documents, presentations for client/authority review
 
-Default to Standard when in doubt.  Do not over-classify.
+CONFIDENTIALITY RULES (apply in order):
+  1. If CONFIDENTIALITY HINT above is 'Confidential' or 'Sensitive', use it.
+     Override only if the content sample is clearly a public technical document.
+  2. Content signals → Confidential:
+       Visible fee amounts, cost breakdowns, budget tables, contract clauses,
+       "confidential", "private", "proprietary", legal party names + signatures
+  3. Content signals → Sensitive:
+       "internal use only", "draft", "not for issue", "WIP", action items,
+       attendee lists, revision comments not yet resolved
+  4. Default to Standard for issued drawings, specs, public-facing reports.
+  5. Do NOT default everything to Standard — if the hint says Confidential,
+     trust it unless content proves otherwise.
 
 ─── ASSET_TYPE ───────────────────────────────────────────────────────────
 Pick one:
@@ -320,17 +422,24 @@ Pick one:
   Archive      — bundled or compressed collections of other assets
   Unknown
 
-ASSET_TYPE RULES (first match wins):
-  - is_data_hint=Likely AND format is .csv/.xlsx/.xls/.json → Data
-  - is_data_hint=Likely AND format is .shp/.geojson/.kml → Data
-  - is_data_hint=Likely AND format is .ifc → Data if property-set-heavy, else Drawing
-  - .dwg/.dxf/.rvt → Drawing (unless filename says "data" or "export")
-  - .pdf with data table or schedule visible in content → Data
-  - .pdf with narrative / diagram content → Document
-  - .pptx → Document
-  - Images (.jpg/.png/.tiff) → Media
-  - .zip → Archive
-  - Heuristic: "Could this be imported into a database or GIS as-is?" → yes=Data
+ASSET_TYPE RULES (apply in order — first match wins):
+  1. If ASSET TYPE HINT above is set, USE IT as your answer for asset_type.
+     Override only if the content sample clearly contradicts it.
+     Example: hint=Data but content shows it is a narrative report → Document.
+  2. Format hard rules (no override):
+       .csv / .xlsx / .xls / .json / .shp / .geojson / .kml / .gpkg → Data
+       .dwg / .dxf / .rvt                                            → Drawing
+       .jpg / .jpeg / .png / .tiff / .mp4 / .mov                     → Media
+       .zip / .7z / .rar                                              → Archive
+       .pptx                                                           → Document
+  3. .ifc → Drawing by default; Data only if content shows it is a property-set
+     or data-export file (entity counts dominated by IFCPROPERTYSET / IFCRELDEFINES)
+  4. .pdf rules:
+       Content shows column headers, data rows, quantities, schedules → Data
+       Content shows narrative text, headings, body paragraphs        → Document
+       Content shows vector diagram descriptions, no text             → Drawing
+  5. Ambiguity test: "Could this file be imported into a database or GIS as-is?"
+       Yes → Data.  No → Document or Drawing based on format.
 
 ─── YEAR, CONFIDENCE, SHORT_SUMMARY ──────────────────────────────────────
 YEAR:
@@ -399,13 +508,31 @@ def layer2_domain(
     file_path = Path(meta["file_path"])
 
     # ── Build structured context blocks ──────────────────────────────────
-    folder_chain          = _format_path_segments(meta, input_path, file_path)
+    folder_chain           = _format_path_segments(meta, input_path, file_path)
     filename_signals_block = _format_filename_signals(meta)
-    lc_hint               = _lifecycle_hint(meta)
-    lifecycle_hint_str    = (
+
+    # Lifecycle hint
+    lc_hint            = _lifecycle_hint(meta)
+    lifecycle_hint_str = (
         f"Suggested: {lc_hint}  (from status tag '{(meta.get('filename_signals') or {}).get('status_tag', '')}')"
         if lc_hint else
         "No status-tag hint available — infer from folder chain and content."
+    )
+
+    # Asset type hint — pre-computed from format + is_data_hint
+    at_hint            = _asset_type_hint(meta)
+    asset_type_hint_str = (
+        f"Suggested: {at_hint}  (from format '{meta.get('format','')}' + data signal '{meta.get('is_data_hint','')}')"
+        if at_hint else
+        "No strong signal — infer from content sample and format."
+    )
+
+    # Confidentiality hint — pre-computed from filename + folder keywords
+    conf_hint               = _confidentiality_hint(meta)
+    confidentiality_hint_str = (
+        f"Suggested: {conf_hint}  (keyword matched in filename or folder path)"
+        if conf_hint else
+        "No confidentiality keywords detected — default to Standard unless content shows otherwise."
     )
 
     # ── Year: strip "(mtime)" suffix for the prompt display ──────────────
@@ -418,19 +545,21 @@ def layer2_domain(
     content_indented = "\n".join("  " + line for line in content_sample.splitlines()) if content_sample else "  (no content extractable)"
 
     prompt = LAYER2_PROMPT.format(
-        project_context        = project_context,
-        filename               = meta["filename"],
-        format                 = meta["format"],
-        size_kb                = meta.get("size_kb", "?"),
-        size_category          = meta.get("size_category", "unknown"),
-        page_count             = meta.get("page_count") or "n/a",
-        year                   = year_disp,
-        folder_chain           = folder_chain,
-        filename_signals_block = filename_signals_block,
-        lifecycle_hint_str     = lifecycle_hint_str,
-        information_type       = meta["information_type"],
-        is_data_hint           = meta.get("is_data_hint", "Unlikely"),
-        content_sample         = content_indented,
+        project_context          = project_context,
+        filename                 = meta["filename"],
+        format                   = meta["format"],
+        size_kb                  = meta.get("size_kb", "?"),
+        size_category            = meta.get("size_category", "unknown"),
+        page_count               = meta.get("page_count") or "n/a",
+        year                     = year_disp,
+        folder_chain             = folder_chain,
+        filename_signals_block   = filename_signals_block,
+        lifecycle_hint_str       = lifecycle_hint_str,
+        asset_type_hint_str      = asset_type_hint_str,
+        confidentiality_hint_str = confidentiality_hint_str,
+        information_type         = meta["information_type"],
+        is_data_hint             = meta.get("is_data_hint", "Unlikely"),
+        content_sample           = content_indented,
     )
 
     # ── LLM call with one retry ───────────────────────────────────────────
