@@ -61,13 +61,21 @@ filtered = df[
 st.sidebar.caption(f"Showing **{len(filtered)}** of {len(df)} files")
 
 # ── KPI row ───────────────────────────────────────────────────────────────
-k1, k2, k3, k4, k5 = st.columns(5)
+k1, k2, k3, k4, k5, k6, k7 = st.columns(7)
 
 k1.metric("Total Files",    len(filtered))
 k2.metric("🔴 High Risk",   int((filtered["risk_level"] == "High").sum()))
 k3.metric("🟡 Medium Risk", int((filtered["risk_level"] == "Medium").sum()))
 k4.metric("🟢 Low Risk",    int((filtered["risk_level"] == "Low").sum()))
 k5.metric("LLM Failures",   int(filtered["llm_status"].notna().sum() if "llm_status" in filtered.columns else 0))
+
+confidential_count = int((filtered["confidentiality"] == "Confidential").sum()) if "confidentiality" in filtered.columns else 0
+data_count         = int((filtered["asset_type"] == "Data").sum()) if "asset_type" in filtered.columns else 0
+
+k6.metric("🔒 Confidential", confidential_count,
+          help="Files classified as Confidential — contracts, fees, budgets, legal agreements")
+k7.metric("🗄️ Data Assets",  data_count,
+          help="Files classified as asset_type = Data — spreadsheets, GIS layers, datasets")
 
 st.divider()
 
