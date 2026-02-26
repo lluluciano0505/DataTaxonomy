@@ -1,4 +1,5 @@
 import re
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -16,19 +17,26 @@ INFO_TYPE_MAP = {
     ".json":    "Quantitative / Tabular",
     ".dwg":     "Schematic / Technical",
     ".dxf":     "Schematic / Technical",
+    ".dwf":     "Schematic / Technical",          # ← NEW: Design Web Format
     ".ifc":     "Schematic / BIM",
     ".rvt":     "Schematic / BIM",
+    ".nwd":     "Schematic / BIM",                # ← NEW: Navisworks
     ".jpg":     "Visual / Media",
     ".jpeg":    "Visual / Media",
     ".png":     "Visual / Media",
     ".tiff":    "Visual / Media",
     ".tif":     "Visual / Media",
+    ".mp4":     "Visual / Media",                 # ← NEW: video
+    ".mov":     "Visual / Media",                 # ← NEW: video
     ".shp":     "Spatial / Cartographic",
     ".geojson": "Spatial / Cartographic",
     ".kml":     "Spatial / Cartographic",
+    ".gpkg":    "Spatial / Cartographic",         # ← NEW: GeoPackage
     ".eml":     "Narrative / Email",
     ".msg":     "Narrative / Email",
     ".zip":     "Archive",
+    ".7z":      "Archive",                        # ← NEW
+    ".rar":     "Archive",                        # ← NEW
 }
 
 # ── PDF extraction config ─────────────────────────────────────────────────
@@ -39,7 +47,7 @@ PDF_MAX_CHARS  = 2400
 DEFAULT_MAX_CHARS = 800
 
 # ── Data detection config ─────────────────────────────────────────────────
-_DATA_FORMATS = {".xlsx", ".xls", ".csv", ".json", ".shp", ".geojson", ".kml"}
+_DATA_FORMATS = {".xlsx", ".xls", ".csv", ".json", ".shp", ".geojson", ".kml", ".gpkg"}
 _DATA_POSSIBLE_FORMATS = {".ifc", ".dxf"}
 
 _DATA_NAME_KEYWORDS = [
@@ -55,6 +63,42 @@ _DATA_CONTENT_KEYWORDS = [
     "timestamp", "unit:", "value:", "measurement", "total:", "sum:",
 ]
 
+# ── AEC / Urban project signals ───────────────────────────────────────────
+# Discipline codes commonly embedded in filenames on large projects
+_DISCIPLINE_CODES = {
+    "ARCH": "Architecture",
+    "STRUC": "Structure", "STR": "Structure", "STRUCT": "Structure",
+    "CIVIL": "Civil", "CVL": "Civil", "CIV": "Civil",
+    "MEP": "MEP", "MECH": "Mechanical", "ELEC": "Electrical", "PLMB": "Plumbing",
+    "LAND": "Landscape", "LS": "Landscape", "LA": "Landscape",
+    "PLAN": "Planning", "PLN": "Planning",
+    "ENVIRO": "Environment", "ENV": "Environment",
+    "SURV": "Survey", "SRV": "Survey",
+    "INFRA": "Infrastructure",
+    "TRANS": "Transport", "TRP": "Transport",
+    "GIS": "GIS/Spatial",
+    "BIM": "BIM",
+    "PM": "Project Management", "PMO": "Project Management",
+}
+
+# Status tags that signal lifecycle position
+_STATUS_TAGS = [
+    "WIP", "DRAFT", "REVIEW", "FOR REVIEW", "FOR COMMENT",
+    "ISSUED", "FINAL", "APPROVED", "SUPERSEDED",
+    "AFC", "IFR", "IFC", "IFT", "IFB", "IFI",          # Issued For Construction/Review/etc.
+    "REV", "REVISION", "PRELIMINARY", "CONCEPT",
+    "AS-BUILT", "ASBUILT", "RECORD",
+]
+
+# Size thresholds (KB)
+_SIZE_CATEGORIES = [
+    (0,     50,    "tiny"),
+    (50,    500,   "small"),
+    (500,   5_000, "medium"),
+    (5_000, 50_000, "large"),
+    (50_000, None,  "xlarge"),
+]
+
 
 # ── Year extraction ───────────────────────────────────────────────────────
 def _find_years_in_text(text: str) -> list[str]:
@@ -63,22 +107,39 @@ def _find_years_in_text(text: str) -> list[str]:
     return [h for h in hits if int(h) <= current]
 
 
-def _extract_year(filename: str, content: str = "") -> Optional[str]:
+def _extract_year(filename: str, content: str = "", file_path: Optional[Path] = None) -> Optional[str]:
+    """
+    Priority order:
+      1. Year in filename (most reliable)
+      2. Most-frequent year in content (noise-filtered)
+      3. File OS modification date (fallback — better than nothing)
+    """
     filename_years = _find_years_in_text(filename)
     if filename_years:
         return max(filename_years, key=int)
 
-    cleaned = re.sub(r"\b[A-Z]{1,5}[\s\-]\d{3,6}[-:]\d{2,4}\b", "", content)
-    cleaned = re.sub(r"©\s*\d{4}", "", cleaned)
-    content_years = _find_years_in_text(cleaned)
-    if not content_years:
-        return None
+    if content:
+        cleaned = re.sub(r"\b[A-Z]{1,5}[\s\-]\d{3,6}[-:]\d{2,4}\b", "", content)
+        cleaned = re.sub(r"©\s*\d{4}", "", cleaned)
+        content_years = _find_years_in_text(cleaned)
+        if content_years:
+            freq       = Counter(content_years)
+            max_freq   = max(freq.values())
+            candidates = [y for y, c in freq.items() if c == max_freq]
+            return max(candidates, key=int)
 
-    from collections import Counter
-    freq       = Counter(content_years)
-    max_freq   = max(freq.values())
-    candidates = [y for y, c in freq.items() if c == max_freq]
-    return max(candidates, key=int)
+    # NEW ── fallback: OS modification date
+    if file_path:
+        try:
+            mtime = file_path.stat().st_mtime
+            mtime_year = str(datetime.fromtimestamp(mtime).year)
+            current = datetime.now().year
+            if 2000 <= int(mtime_year) <= current:
+                return mtime_year + " (mtime)"
+        except Exception:
+            pass
+
+    return None
 
 
 # ── Coverage helpers ──────────────────────────────────────────────────────
@@ -113,6 +174,94 @@ def _is_data_hint(file_path: Path, content: str) -> str:
         return "Possible"
 
     return "Unlikely"
+
+
+# ── NEW: Path segments ────────────────────────────────────────────────────
+def _extract_path_segments(file_path: Path) -> list[str]:
+    """
+    Returns all meaningful folder names in the path (from root down to parent),
+    stripping drive letters and common no-signal roots like 'Users', 'home', etc.
+
+    Example:
+      /Users/luca/Projects/DataTaxonomy/2022Masterplan/03_Design/ARCH/drawings/file.dwg
+      → ['DataTaxonomy', '2022Masterplan', '03_Design', 'ARCH', 'drawings']
+
+    This is far more informative than just `folder = file_path.parent.name`
+    and gives Layer 2 the full context chain.
+    """
+    _SKIP = {"users", "user", "home", "documents", "downloads", "desktop",
+             "onedrive", "sharepoint", "sites", "shared documents",
+             "c:", "d:", "volumes", "mnt", "/"}
+    parts = []
+    for part in file_path.parts[:-1]:  # exclude filename
+        clean = part.strip("/\\")
+        if clean.lower() not in _SKIP and clean not in ("", "."):
+            parts.append(clean)
+    return parts[-8:]  # cap at 8 levels — enough context, not noise
+
+
+# ── NEW: Filename signals ─────────────────────────────────────────────────
+def _extract_filename_signals(filename: str) -> dict:
+    """
+    Parses AEC-standard filename patterns to extract structured signals:
+      - discipline_code  → e.g. "Architecture" (from ARCH, STRUC, etc.)
+      - status_tag       → e.g. "IFC", "DRAFT", "FINAL"
+      - version          → e.g. "v3", "Rev B", "P04"
+      - drawing_number   → e.g. "A-001", "SK-024"
+      - has_date_in_name → bool (True if YYYYMMDD or YYYY-MM-DD pattern found)
+
+    These signals are passed verbatim to Layer 2 so the LLM doesn't have to
+    re-parse noisy filenames from scratch.
+    """
+    stem = Path(filename).stem.upper()
+
+    # Discipline code
+    discipline = None
+    for code, label in _DISCIPLINE_CODES.items():
+        # Match as word boundary: ARCH_, -ARCH-, _ARCH, etc.
+        if re.search(r"(?<![A-Z])" + re.escape(code) + r"(?![A-Z])", stem):
+            discipline = label
+            break
+
+    # Status tag
+    status = None
+    for tag in _STATUS_TAGS:
+        if re.search(r"(?<![A-Z])" + re.escape(tag.replace(" ", "[_ -]?")) + r"(?![A-Z])", stem):
+            status = tag
+            break
+
+    # Version / revision (v1, v01, Rev A, REV-B, P04, R2, _02_)
+    version_match = re.search(
+        r"[\-_](?:V|REV|R|P)[\-_]?(\d{1,3}|[A-F])(?=[\-_.]|$)"
+        r"|[\-_](\d{2})(?=[\-_.]|$)",
+        stem
+    )
+    version = version_match.group(0).strip("-_") if version_match else None
+
+    # Drawing number — common patterns: A-001, SK002, 10-001, C.001
+    drawing_match = re.search(r"\b([A-Z]{1,4}[\-\.]\d{3,5})\b", stem)
+    drawing_number = drawing_match.group(1) if drawing_match else None
+
+    # Date in filename (YYYYMMDD or YYYY-MM-DD)
+    has_date_in_name = bool(re.search(r"20\d{2}[0-1]\d[0-3]\d", filename) or
+                            re.search(r"20\d{2}-[0-1]\d-[0-3]\d", filename))
+
+    return {
+        "discipline_code":  discipline,
+        "status_tag":       status,
+        "version":          version,
+        "drawing_number":   drawing_number,
+        "has_date_in_name": has_date_in_name,
+    }
+
+
+# ── NEW: Size category ────────────────────────────────────────────────────
+def _size_category(size_kb: int) -> str:
+    for lo, hi, label in _SIZE_CATEGORIES:
+        if hi is None or size_kb < hi:
+            if size_kb >= lo:
+                return label
+    return "xlarge"
 
 
 # ── Content extraction ────────────────────────────────────────────────────
@@ -181,18 +330,15 @@ def _extract_content(file_path: Path) -> tuple[str, Optional[int], str]:
             from pptx import Presentation
             prs        = Presentation(str(file_path))
             all_slides = list(prs.slides)
-            total      = len(all_slides)
-            head_idx   = list(range(min(3, total)))
-            tail_idx   = list(range(max(0, total - 2), total))
-            indices    = list(dict.fromkeys(head_idx + tail_idx))
-            texts = []
-            for i in indices:
-                slide_texts = [shape.text.strip() for shape in all_slides[i].shapes
-                               if hasattr(shape, "text") and shape.text.strip()]
-                if slide_texts:
-                    texts.append(f"[slide {i + 1}] " + " / ".join(slide_texts))
-            content  = "\n".join(texts)[:DEFAULT_MAX_CHARS]
-            coverage = f"{len(indices)}/{total} slides sampled (head+tail)"
+            sample     = all_slides[:5]
+            parts      = []
+            for i, slide in enumerate(sample):
+                texts = [shape.text.strip() for shape in slide.shapes
+                         if shape.has_text_frame and shape.text.strip()]
+                if texts:
+                    parts.append(f"[Slide {i+1}] " + " | ".join(texts[:3]))
+            content  = "\n".join(parts)[:DEFAULT_MAX_CHARS]
+            coverage = f"{len(sample)}/{len(all_slides)} slides sampled"
         except Exception as e:
             content, coverage = f"[PPTX error: {e}]", "extraction failed"
         return content, None, coverage
@@ -231,7 +377,23 @@ def _extract_content(file_path: Path) -> tuple[str, Optional[int], str]:
         return content, None, coverage
 
     elif ext == ".dwg":
-        return "[DWG binary — filename and folder path signals only]", None, "binary, no extraction"
+        # NEW ── Try to read ASCII header bytes (DWG starts with "AC" version string)
+        try:
+            raw_bytes = file_path.read_bytes()[:200]
+            header    = raw_bytes[:6].decode("ascii", errors="replace")
+            # DWG version map
+            _DWG_VER = {
+                "AC1032": "AutoCAD 2018–2021", "AC1027": "AutoCAD 2013–2017",
+                "AC1024": "AutoCAD 2010–2012", "AC1021": "AutoCAD 2007–2009",
+                "AC1018": "AutoCAD 2004–2006", "AC1015": "AutoCAD 2000–2002",
+            }
+            ver_label = _DWG_VER.get(header.strip(), header.strip())
+            content   = f"[DWG binary — version: {ver_label} — filename and folder path signals only]"
+            coverage  = "binary header only"
+        except Exception:
+            content  = "[DWG binary — filename and folder path signals only]"
+            coverage = "binary, no extraction"
+        return content, None, coverage
 
     elif ext == ".dxf":
         try:
@@ -248,10 +410,33 @@ def _extract_content(file_path: Path) -> tuple[str, Optional[int], str]:
         return "[Revit binary — filename and folder path signals only]", None, "binary, no extraction"
 
     elif ext == ".ifc":
+        # NEW ── Structured IFC header + entity type frequency
         try:
-            raw      = file_path.read_text(encoding="utf-8", errors="replace")
-            content  = raw[:DEFAULT_MAX_CHARS]
-            coverage = _cov_chars(raw, DEFAULT_MAX_CHARS, "IFC header")
+            raw = file_path.read_text(encoding="utf-8", errors="replace")
+
+            # Extract STEP header fields
+            desc_match   = re.search(r"FILE_DESCRIPTION\s*\(([^;]+)\)", raw)
+            schema_match = re.search(r"FILE_SCHEMA\s*\(\s*\('([^']+)'\)", raw)
+            name_match   = re.search(r"FILE_NAME\s*\('([^']*)'", raw)
+
+            description = desc_match.group(1)[:200].strip() if desc_match else ""
+            schema      = schema_match.group(1) if schema_match else ""
+            file_name   = name_match.group(1) if name_match else ""
+
+            # Count IFC entity types (e.g. IFCWALL, IFCSLAB, IFCCOLUMN …)
+            entity_hits = re.findall(r"^#\d+=\s*(IFC[A-Z0-9]+)\(", raw, re.MULTILINE)
+            top_entities = ", ".join(
+                f"{e}×{c}" for e, c in Counter(entity_hits).most_common(8)
+            )
+
+            header_block = "\n".join(filter(None, [
+                f"[IFC schema: {schema}]" if schema else "",
+                f"[Authored as: {file_name}]" if file_name else "",
+                f"[Description: {description}]" if description else "",
+                f"[Top entity types: {top_entities}]" if top_entities else "",
+            ]))
+            content  = (header_block + "\n" + raw[:800])[:DEFAULT_MAX_CHARS]
+            coverage = _cov_chars(raw, DEFAULT_MAX_CHARS, "IFC header+entities")
         except Exception as e:
             content, coverage = f"[IFC error: {e}]", "extraction failed"
         return content, None, coverage
@@ -307,7 +492,6 @@ def _extract_content(file_path: Path) -> tuple[str, Optional[int], str]:
     elif ext == ".zip":
         try:
             import zipfile, tempfile
-            from collections import Counter
             with zipfile.ZipFile(file_path) as z:
                 names = z.namelist()
             exts        = Counter(Path(n).suffix.lower() for n in names if Path(n).suffix)
@@ -339,15 +523,31 @@ def _extract_content(file_path: Path) -> tuple[str, Optional[int], str]:
             content, coverage = f"[ZIP error: {e}]", "extraction failed"
         return content, None, coverage
 
-    elif ext in (".shp", ".geojson", ".kml"):
+    elif ext in (".shp", ".geojson", ".kml", ".gpkg"):
+        # NEW ── try geopandas for richer spatial metadata
         try:
-            raw      = file_path.read_text(encoding="utf-8", errors="replace")
-            content  = raw[:400]
-            coverage = _cov_chars(raw, 400, ext.upper())
-        except Exception:
-            size_kb  = file_path.stat().st_size // 1024
-            content  = f"[{ext.upper()} spatial file — {size_kb} KB — likely binary SHP]"
-            coverage = "binary, no extraction"
+            import geopandas as gpd
+            gdf      = gpd.read_file(str(file_path), rows=5)
+            geom_types = gdf.geometry.geom_type.value_counts().to_dict()
+            crs_str    = str(gdf.crs) if gdf.crs else "unknown CRS"
+            cols       = list(gdf.columns)
+            content  = (f"[Spatial file — CRS: {crs_str}]\n"
+                        f"Geometry types: {geom_types}\n"
+                        f"Columns: {cols}\n"
+                        f"Feature count (sample): {len(gdf)}")[:DEFAULT_MAX_CHARS]
+            coverage = f"geopandas — {len(gdf)} features sampled"
+        except ImportError:
+            # geopandas not available — fall back to raw text read
+            try:
+                raw      = file_path.read_text(encoding="utf-8", errors="replace")
+                content  = raw[:400]
+                coverage = _cov_chars(raw, 400, ext.upper())
+            except Exception:
+                size_kb  = file_path.stat().st_size // 1024
+                content  = f"[{ext.upper()} spatial file — {size_kb} KB — likely binary]"
+                coverage = "binary, no extraction"
+        except Exception as e:
+            content, coverage = f"[Spatial error: {e}]", "extraction failed"
         return content, None, coverage
 
     return "", None, "unsupported format"
@@ -357,21 +557,26 @@ def _extract_content(file_path: Path) -> tuple[str, Optional[int], str]:
 def layer1_technical(file_path: Path) -> dict:
     ext                      = file_path.suffix.lower()
     content, pages, coverage = _extract_content(file_path)
-    year                     = _extract_year(file_path.name, content)
+    year                     = _extract_year(file_path.name, content, file_path)  # ← passes file_path now
     info_type                = INFO_TYPE_MAP.get(ext, "Unknown")
     size_kb                  = file_path.stat().st_size // 1024
-    is_data_hint             = _is_data_hint(file_path, content)
 
     return {
+        # ── Original fields (unchanged) ──────────────────────────────────
         "filename":            file_path.name,
         "format":              ext.lstrip(".").upper(),
         "information_type":    info_type,
         "year":                year,
         "page_count":          pages,
         "size_kb":             size_kb,
-        "folder":              file_path.parent.name,
+        "folder":              file_path.parent.name,        # kept for backwards compat
         "file_path":           str(file_path),
         "content_sample":      content,
         "extraction_coverage": coverage,
-        "is_data_hint":        is_data_hint,
+        "is_data_hint":        _is_data_hint(file_path, content),
+
+        # ── NEW fields ───────────────────────────────────────────────────
+        "size_category":       _size_category(size_kb),
+        "path_segments":       _extract_path_segments(file_path),  # full folder chain → huge signal
+        "filename_signals":    _extract_filename_signals(file_path.name),  # discipline/status/version/drawing_no
     }
