@@ -26,14 +26,14 @@ if not API_KEY:
 
 # ── Project Configuration ────────────────────────────────────────────────
 PROJECT = {
-    "name":         "King Salman Park Masterplan",
-    "location":     "Riyadh, Saudi Arabia",
-    "year_range":   [2018, 2023],
+    "name":         "Fælledby Masterplan",
+    "location":     "Copenhagen, Denmark",
+    "year_range":   [2019, 2026],
     "lead_firm":    "Henning Larsen",
-    "consultants":  ["MVA", "Happold", "Gerber", "COWI", "GHS", "FLB", "OMRANIA"],
-    "authorities":  ["RCRC", "MOMRA", "MEWA", "SASO", "NFPA", "SEC"],
-    "drawing_code": "KSP-[FIRM]-[PHASE]-[DISCIPLINE]-[TYPE]-[NUMBER]",
-    "notes":        "Mixed-use urban masterplan. Internal files use KSP prefix.",
+    "consultants":  ["MOE", "BirdLife Denmark", "VIVA Landscape", "Niras"],
+    "authorities":  ["Copenhagen Municipality", "By & Havn", "Danish EPA"],
+    "drawing_code": "FLB-[FIRM]-[PHASE]-[DISCIPLINE]-[TYPE]-[NUMBER]",
+    "notes":        "Timber-based rural-urban community. Focus on biodiversity and local ecology.",
 }
 
 # ── Path Configuration ───────────────────────────────────────────────────
@@ -57,14 +57,14 @@ if __name__ == "__main__":
         print(f"❌ Error: Path not found at {INPUT_PATH}")
         print("   Please check if the '2022Masterplan' folder is on your Desktop.")
     else:
-        print(f"🚀 Processing 100 files from: {INPUT_PATH.name}...")
+        print(f"🚀 Processing n files from: {INPUT_PATH.name}...")
 
         try:
             summary = run(
                 input_path = INPUT_PATH,
                 output_csv = OUTPUT_CSV,
                 config     = config,
-                sample_n   = 100,
+                sample_n   = 50,
             )
             print(f"✅ Success! Results saved to: {OUTPUT_CSV}")
             print(f"📝 Summary: {summary}")
