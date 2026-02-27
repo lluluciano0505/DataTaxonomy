@@ -64,7 +64,7 @@ if __name__ == "__main__":
                 input_path = INPUT_PATH,
                 output_csv = OUTPUT_CSV,
                 config     = config,
-                sample_n   = 50,
+                sample_n   = 200,
             )
             print(f"✅ Success! Results saved to: {OUTPUT_CSV}")
             print(f"📝 Summary: {summary}")

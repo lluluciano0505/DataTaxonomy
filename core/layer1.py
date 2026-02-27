@@ -47,48 +47,28 @@ PDF_MAX_CHARS  = 2400
 DEFAULT_MAX_CHARS = 800
 
 # ── Data detection config ─────────────────────────────────────────────────
-_DATA_FORMATS = {".xlsx", ".xls", ".csv", ".json", ".shp", ".geojson", ".kml", ".gpkg"}
-_DATA_POSSIBLE_FORMATS = {".ifc", ".dxf"}
-
-_DATA_NAME_KEYWORDS = [
-    "data", "dataset", "statistics", "statistic", "survey", "census",
-    "database", "db", "gis", "layer", "inventory", "index", "register",
-    "schedule", "matrix", "table", "count", "measurement", "sensor",
-    "output", "export", "report_data", "analysis",
-]
-
-_DATA_CONTENT_KEYWORDS = [
-    "latitude", "longitude", "geometry", "coordinates", "feature",
-    "field_name", "column", "row_count", "record", "attribute",
-    "timestamp", "unit:", "value:", "measurement", "total:", "sum:",
-]
-
-# ── AEC / Urban project signals ───────────────────────────────────────────
-# Discipline codes commonly embedded in filenames on large projects
-_DISCIPLINE_CODES = {
-    "ARCH": "Architecture",
-    "STRUC": "Structure", "STR": "Structure", "STRUCT": "Structure",
-    "CIVIL": "Civil", "CVL": "Civil", "CIV": "Civil",
-    "MEP": "MEP", "MECH": "Mechanical", "ELEC": "Electrical", "PLMB": "Plumbing",
-    "LAND": "Landscape", "LS": "Landscape", "LA": "Landscape",
-    "PLAN": "Planning", "PLN": "Planning",
-    "ENVIRO": "Environment", "ENV": "Environment",
-    "SURV": "Survey", "SRV": "Survey",
-    "INFRA": "Infrastructure",
-    "TRANS": "Transport", "TRP": "Transport",
-    "GIS": "GIS/Spatial",
-    "BIM": "BIM",
-    "PM": "Project Management", "PMO": "Project Management",
+# Format → base score.  Language-agnostic: works regardless of filename or folder name.
+# Positive = tends to be structured data.  Negative = tends to be document/drawing/media.
+# These are format facts, not cultural assumptions.
+_FORMAT_DATA_SCORE = {
+    # Pure data formats — no ambiguity
+    ".csv":     5,   ".shp":     5,   ".geojson": 5,
+    ".kml":     5,   ".gpkg":    5,
+    # Strong data formats (could occasionally be used as config/template)
+    ".xlsx":    4,   ".xls":     4,   ".json":    2,
+    # Drawing / BIM — almost never raw data
+    ".dwg":    -4,   ".rvt":    -4,   ".nwd":    -4,   ".dwf":    -3,
+    ".ifc":    -1,   # BIM model; lean non-data but content can override
+    # Media — never data
+    ".mp4":    -4,   ".mov":    -4,
+    ".jpg":    -3,   ".jpeg":   -3,   ".png":    -3,
+    ".tiff":   -3,   ".tif":    -3,
+    # Document formats — lean non-data, but content can override
+    ".pdf":    -1,   ".pptx":   -2,
+    ".docx":   -1,   ".doc":    -1,
+    ".eml":    -2,   ".msg":    -2,
 }
 
-# Status tags that signal lifecycle position
-_STATUS_TAGS = [
-    "WIP", "DRAFT", "REVIEW", "FOR REVIEW", "FOR COMMENT",
-    "ISSUED", "FINAL", "APPROVED", "SUPERSEDED",
-    "AFC", "IFR", "IFC", "IFT", "IFB", "IFI",          # Issued For Construction/Review/etc.
-    "REV", "REVISION", "PRELIMINARY", "CONCEPT",
-    "AS-BUILT", "ASBUILT", "RECORD",
-]
 
 # Size thresholds (KB)
 _SIZE_CATEGORIES = [
@@ -152,28 +132,130 @@ def _cov_chars(content: str, cap: int, label: str = "") -> str:
     return f"{label} — {base}" if label else base
 
 
-# ── Data hint ─────────────────────────────────────────────────────────────
+# ── Data hint — content structure analysis ────────────────────────────────
+def _score_content_structure(content: str) -> int:
+    """
+    Analyse the structural pattern of extracted text to decide if it looks
+    like tabular/structured data.  Language-agnostic: works in Arabic, French,
+    Chinese, or any naming convention because it measures *shape*, not words.
+
+    Signals measured
+    ────────────────
+    numeric_density   — what fraction of tokens are numbers?
+                        Data files are full of numbers; narrative docs are not.
+    delimiter_density — frequency of field separators (, | \t ;) per line.
+                        High density → columnar / tabular structure.
+    row_regularity    — do lines have a similar token count AND high delimiter
+                        density?  Checked together because word-wrapped prose
+                        also has regular line lengths (false positive if checked
+                        alone).
+    header_pattern    — does the first non-empty line look like a header row
+                        (3+ delimiter-separated short tokens, matching count
+                        in the second line)?
+
+    Each signal contributes ±points independently so they combine gracefully.
+    No language keywords are used.
+    """
+    if not content or len(content.strip()) < 40:
+        return 0
+
+    lines = [l for l in content.splitlines() if l.strip()]
+    if len(lines) < 2:
+        return 0
+
+    score = 0
+
+    # ── Numeric density ───────────────────────────────────────────────────
+    tokens = re.split(r"[\s,|\t;/]+", content)
+    tokens = [t for t in tokens if t]
+    if tokens:
+        numeric = sum(1 for t in tokens if re.fullmatch(r"-?\d+([.,]\d+)?", t))
+        num_ratio = numeric / len(tokens)
+        if   num_ratio > 0.35:  score += 3
+        elif num_ratio > 0.15:  score += 1
+        elif num_ratio < 0.03:  score -= 1
+
+    # ── Delimiter density ─────────────────────────────────────────────────
+    delimiters = re.findall(r"[,|\t;]", content)
+    delim_per_line = len(delimiters) / len(lines)
+    if   delim_per_line > 4:   score += 3
+    elif delim_per_line > 1.5: score += 1
+    elif delim_per_line < 0.3: score -= 1
+
+    # ── Row regularity (ONLY when delimiters also present) ────────────────
+    # Word-wrapped prose also has regular line lengths → checking regularity
+    # alone causes false positives.  We require delim_per_line > 1 as a gate
+    # so this bonus only fires for genuinely columnar content.
+    if delim_per_line > 1.0 and len(lines) >= 3:
+        lengths  = [len(l.split()) for l in lines]
+        mean_len = sum(lengths) / len(lengths)
+        if mean_len > 0:
+            variance = sum((x - mean_len) ** 2 for x in lengths) / len(lengths)
+            cv       = (variance ** 0.5) / mean_len
+            if   cv < 0.3:  score += 2
+            elif cv < 0.6:  score += 1
+
+    # ── Header pattern ────────────────────────────────────────────────────
+    first     = lines[0]
+    cols_first = re.split(r"[,|\t;]", first)
+    if len(cols_first) >= 3:
+        avg_col_len = sum(len(c.strip()) for c in cols_first) / len(cols_first)
+        if avg_col_len < 30:
+            score += 2
+            if len(lines) > 1:
+                cols_second = re.split(r"[,|\t;]", lines[1])
+                if len(cols_second) == len(cols_first):
+                    score += 1
+
+    return score
+
+
 def _is_data_hint(file_path: Path, content: str) -> str:
-    ext        = file_path.suffix.lower()
-    path_lower = str(file_path).lower()
+    """
+    Decides whether a file is likely a structured data asset.
 
-    if ext in _DATA_FORMATS:
+    Strategy
+    ────────
+    1. Format score  — language-agnostic, format is the strongest single signal.
+    2. Content structure score — measures numeric density, delimiter density,
+       row regularity, and header patterns.  Works in any language or naming
+       convention because it analyses *shape*, not keywords.
+    3. Drawing-number guard — a drawing ref in the filename (e.g. A-001, SK-024)
+       is a strong negative signal regardless of format.
+
+    Folder/filename keyword matching is intentionally REMOVED: it fails for
+    non-English projects, client-specific naming conventions, and ambiguous
+    AEC terms ("schedule", "layer", "matrix" = documents in AEC, not data).
+
+    Thresholds:  ≥ 4 → Likely | 1–3 → Possible | ≤ 0 → Unlikely
+    """
+    ext = file_path.suffix.lower()
+
+    # ── Format base score ─────────────────────────────────────────────────
+    score = _FORMAT_DATA_SCORE.get(ext, 0)
+
+    # ── Short-circuit: pure-data formats don't need content analysis ──────
+    if score >= 5:
         return "Likely"
 
-    if ext in _DATA_POSSIBLE_FORMATS:
-        if any(k in path_lower for k in _DATA_NAME_KEYWORDS):
-            return "Likely"
-        if any(k in content.lower() for k in _DATA_CONTENT_KEYWORDS):
-            return "Possible"
-        return "Unlikely"
+    # ── Drawing-number guard (language-agnostic — pattern, not words) ─────
+    # E.g. A-001, SK-024, C.003, 10-001 — these tag drawings, never datasets
+    if re.search(r"\b[A-Za-z]{1,4}[.\-]\d{3,5}\b", file_path.stem):
+        score -= 2
 
-    if any(k in path_lower for k in _DATA_NAME_KEYWORDS):
-        return "Likely"
+    # ── Content structure analysis ────────────────────────────────────────
+    # Only meaningful for formats that can hold either data or narrative text
+    if content and ext not in {
+        ".dwg", ".rvt", ".nwd", ".dwf",
+        ".mp4", ".mov", ".jpg", ".jpeg", ".png", ".tiff", ".tif",
+        ".msg",
+    }:
+        score += _score_content_structure(content)
 
-    if content and any(k in content.lower() for k in _DATA_CONTENT_KEYWORDS):
-        return "Possible"
-
-    return "Unlikely"
+    # ── Score → label ─────────────────────────────────────────────────────
+    if   score >= 4:  return "Likely"
+    elif score >= 1:  return "Possible"
+    else:             return "Unlikely"
 
 
 # ── NEW: Path segments ────────────────────────────────────────────────────
@@ -200,58 +282,79 @@ def _extract_path_segments(file_path: Path) -> list[str]:
     return parts[-8:]  # cap at 8 levels — enough context, not noise
 
 
-# ── NEW: Filename signals ─────────────────────────────────────────────────
+# ── Filename signals — structural token extraction ────────────────────────
 def _extract_filename_signals(filename: str) -> dict:
     """
-    Parses AEC-standard filename patterns to extract structured signals:
-      - discipline_code  → e.g. "Architecture" (from ARCH, STRUC, etc.)
-      - status_tag       → e.g. "IFC", "DRAFT", "FINAL"
-      - version          → e.g. "v3", "Rev B", "P04"
-      - drawing_number   → e.g. "A-001", "SK-024"
-      - has_date_in_name → bool (True if YYYYMMDD or YYYY-MM-DD pattern found)
+    Structural parsing of filename segments.  No enumeration of discipline
+    codes or status tags — those lists are English-only and naming-convention-
+    specific.  Instead we extract token shapes and let Layer 2 (LLM) interpret
+    the meaning.
 
-    These signals are passed verbatim to Layer 2 so the LLM doesn't have to
-    re-parse noisy filenames from scratch.
+    What we extract
+    ───────────────
+    code_tokens      — all-caps tokens, 2–6 chars, no digits.
+                       These are positional abbreviations (discipline, status,
+                       zone, phase codes).  Passed raw to LLM; it understands
+                       ARCH, MEP, IFC, WIP, GIS regardless of project language.
+
+    version          — structural version/revision pattern: V/R/P + number,
+                       or bare two-digit sequence between separators.
+                       Language-agnostic (same regex works in any project).
+
+    drawing_number   — letter-code + separator + 3–5 digit run (A-001, SK-024).
+                       Strong structural signal that the file is a drawing.
+
+    has_date_in_name — True if YYYYMMDD or YYYY-MM-DD appears in stem.
+
+    numeric_tokens   — standalone numbers between separators (zone IDs, rev
+                       numbers, phase indices like 03, 204, 1001).
+
+    token_count      — total segment count after splitting on separators.
+                       Very high count (>6) → likely structured naming convention.
+                       Very low count (1–2) → freeform or legacy name.
+
+    raw_stem         — full stem passed to Layer 2 so the LLM can read it
+                       directly without lossy pre-parsing.
     """
-    stem = Path(filename).stem.upper()
+    stem       = Path(filename).stem
+    stem_upper = stem.upper()
 
-    # Discipline code
-    discipline = None
-    for code, label in _DISCIPLINE_CODES.items():
-        # Match as word boundary: ARCH_, -ARCH-, _ARCH, etc.
-        if re.search(r"(?<![A-Z])" + re.escape(code) + r"(?![A-Z])", stem):
-            discipline = label
-            break
+    # Split on all common separators
+    tokens = re.split(r"[_\-\.\s]+", stem_upper)
+    tokens = [t for t in tokens if t]
 
-    # Status tag
-    status = None
-    for tag in _STATUS_TAGS:
-        if re.search(r"(?<![A-Z])" + re.escape(tag).replace(r"\ ", r"[_ -]?") + r"(?![A-Z])", stem):
-            status = tag
-            break
+    # All-caps code tokens: 2–6 letters, no digits — discipline / status / zone codes
+    code_tokens = [t for t in tokens if re.fullmatch(r"[A-Z]{2,6}", t)]
 
-    # Version / revision (v1, v01, Rev A, REV-B, P04, R2, _02_)
+    # Version/revision — language-agnostic structural pattern
     version_match = re.search(
         r"[\-_](?:V|REV|R|P)[\-_]?(\d{1,3}|[A-F])(?=[\-_.]|$)"
         r"|[\-_](\d{2})(?=[\-_.]|$)",
-        stem
+        stem_upper,
     )
     version = version_match.group(0).strip("-_") if version_match else None
 
-    # Drawing number — common patterns: A-001, SK002, 10-001, C.001
-    drawing_match = re.search(r"\b([A-Z]{1,4}[\-\.]\d{3,5})\b", stem)
+    # Drawing number: letter prefix + separator + 3–5 digit run
+    drawing_match  = re.search(r"\b([A-Z]{1,4}[\-\.]\d{3,5})\b", stem_upper)
     drawing_number = drawing_match.group(1) if drawing_match else None
 
-    # Date in filename (YYYYMMDD or YYYY-MM-DD)
-    has_date_in_name = bool(re.search(r"20\d{2}[0-1]\d[0-3]\d", filename) or
-                            re.search(r"20\d{2}-[0-1]\d-[0-3]\d", filename))
+    # Date in filename (YYYYMMDD compact or YYYY-MM-DD / YYYY_MM_DD)
+    has_date_in_name = bool(
+        re.search(r"20\d{2}[0-1]\d[0-3]\d", filename) or
+        re.search(r"20\d{2}[-_][0-1]\d[-_][0-3]\d", filename)
+    )
+
+    # Standalone numeric segments (zone, phase, sequence IDs)
+    numeric_tokens = [t for t in tokens if re.fullmatch(r"\d{1,5}", t)]
 
     return {
-        "discipline_code":  discipline,
-        "status_tag":       status,
-        "version":          version,
-        "drawing_number":   drawing_number,
-        "has_date_in_name": has_date_in_name,
+        "code_tokens":       code_tokens,        # raw; LLM interprets meaning
+        "version":           version,
+        "drawing_number":    drawing_number,
+        "has_date_in_name":  has_date_in_name,
+        "numeric_tokens":    numeric_tokens,
+        "token_count":       len(tokens),
+        "raw_stem":          stem,               # full stem for LLM
     }
 
 
