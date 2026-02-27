@@ -23,120 +23,177 @@ from pathlib import Path
 from openai import OpenAI
 
 
-# ── Lifecycle pre-hint map ────────────────────────────────────────────────
-# Maps AEC status codes to candidate lifecycle values, injected into the prompt
-# as a weighted hint.  The LLM can override this if other signals contradict it.
-_STATUS_TO_LIFECYCLE_HINT: dict[str, str] = {
-    # Construction Documents / tender stage
-    "IFC":      "Construction Documents",   # Issued For Construction
-    "AFC":      "Construction Documents",   # Approved For Construction
-    "IFT":      "Construction Documents",   # Issued For Tender
-    "IFB":      "Construction Documents",   # Issued For Bid
-    "100%":     "Construction Documents",
-    "ISSUED":   "Construction Documents",
-    # Design Development
-    "IFR":      "Design Development",       # Issued For Review
-    "IFI":      "Design Development",       # Issued For Information
-    "DD":       "Design Development",
-    "REVIEW":   "Design Development",
-    "FOR REVIEW": "Design Development",
-    "FOR COMMENT": "Design Development",
-    # Schematic / Concept
-    "CONCEPT":  "Schematic Design",
-    "PRELIMINARY": "Schematic Design",
-    "SD":       "Schematic Design",
-    # WIP / Draft (could be any phase — signal is weak)
-    "WIP":      None,
-    "DRAFT":    None,
-    # Post-construction
-    "AS-BUILT": "As-Built / Completed",
-    "ASBUILT":  "As-Built / Completed",
-    "RECORD":   "As-Built / Completed",
-    "APPROVED": "As-Built / Completed",
-    "FINAL":    "As-Built / Completed",     # ambiguous but lean late-stage
-    # Superseded → archive
-    "SUPERSEDED": "Reference / Archive",
-}
-
-
+# ── Lifecycle hint — content structure analysis ───────────────────────────
 def _lifecycle_hint(meta: dict) -> str | None:
-    """Return a lifecycle hint string derived from filename_signals.status_tag, or None."""
+    """
+    Infer lifecycle stage from structural signals in the content sample and
+    filename token shapes.  No enumeration of status-code abbreviations —
+    those are English-centric and naming-convention-specific.
+
+    Instead we look for signals that are structurally distinct regardless of
+    language: approval stamps (date + signature block patterns), clause
+    numbering depth, revision frequency, and percentage-of-completion markers.
+
+    The LLM sees the raw code_tokens (ARCH, IFC, WIP, …) directly and can
+    interpret their meaning; our job here is only to detect coarse lifecycle
+    position from objective structural features.
+    """
+    content = (meta.get("content_sample") or "")
     signals = meta.get("filename_signals") or {}
-    tag = (signals.get("status_tag") or "").upper()
-    return _STATUS_TO_LIFECYCLE_HINT.get(tag)
 
+    # ── Drawing number → almost always a formal issued document ──────────
+    # Pattern: letter-code + separator + 3–5 digits (A-001, SK-024, C.003)
+    # Language-agnostic: this is a structural drawing reference format
+    if signals.get("drawing_number"):
+        # Has version/revision too → still in development
+        if signals.get("version"):
+            return "Design Development"
+        # No revision marker on an issued drawing → likely CD or later
+        return "Construction Documents"
 
-# ── Data formats that always → asset_type = Data ─────────────────────────
-_HARD_DATA_FORMATS = {
-    "CSV", "XLSX", "XLS", "JSON", "SHP", "GEOJSON", "KML", "GPKG",
-}
+    if not content:
+        return None
 
-_DATA_NAME_SIGNALS = [
-    "data", "dataset", "statistics", "survey", "census", "inventory",
-    "register", "schedule", "matrix", "gis", "layer", "export", "analysis",
-    "measurement", "count", "index", "database",
-]
+    # ── Completion / handover: late-stage structural markers ─────────────
+    # Signature + date fields together = formal document execution
+    sig_blocks  = len(re.findall(r"_{5,}|\.{5,}", content))
+    date_fields = len(re.findall(r"Date\s*[:/]?\s*_{3,}|\bDate\b.{0,20}\d{1,2}[/\-\.]\d{1,2}", content, re.IGNORECASE))
+    if sig_blocks >= 2 and date_fields >= 1:
+        return "Construction Documents"   # executed / issued document
 
-def _asset_type_hint(meta: dict) -> str | None:
-    """
-    Pre-compute asset_type from format + is_data_hint + filename.
-    Returns 'Data', 'Drawing', or None (let LLM decide).
-    """
-    fmt      = (meta.get("format") or "").upper()
-    hint     = meta.get("is_data_hint", "Unlikely")
-    path_low = (meta.get("file_path") or "").lower()
-    filename = (meta.get("filename") or "").lower()
+    # ── As-built: specific text patterns that cross language boundaries ───
+    # These phrases appear on drawings globally (often in English even on
+    # Arabic/French projects because they are international AEC conventions)
+    if re.search(r"\bAS[- ]?BUILT\b|\bRECORD DRAWING\b|\bHANDOVER\b", content, re.IGNORECASE):
+        return "As-Built / Completed"
 
-    if fmt in _HARD_DATA_FORMATS:
-        return "Data"
+    # ── Revision table: structured rows with version + date pattern ───────
+    # Matches:  "Rev 1  12/01/2023"  or  "1  12/01/2023"  or  "A  01-03-2023"
+    # Using date-shape (N/N or N-N) not language keywords.
+    rev_entries = len(re.findall(
+        r"(?:^|\n)\s*(?:\w{1,5}\s+)?\d+\s+\d{1,2}[/\-.]\d{1,2}",
+        content,
+    ))
+    if rev_entries >= 3:
+        return "Design Development"
 
-    if fmt in {"DWG", "DXF", "RVT", "IFC", "NWD"}:
-        return "Drawing"
-
-    if hint == "Likely":
-        combined = path_low + " " + filename
-        if any(k in combined for k in _DATA_NAME_SIGNALS):
-            return "Data"
-        return "Data"
+    # ── Feasibility / concept: questions + labelled options ──────────────
+    # Multiple question marks OR labelled alternatives (Option A / Alternative 1)
+    # are structural fingerprints of early-phase exploration documents.
+    question_marks = content.count("?")
+    option_markers = len(re.findall(r"\bOption\s+[A-Z\d]\b|\bAlternative\s+\d\b", content, re.IGNORECASE))
+    if question_marks >= 3 or option_markers >= 2:
+        return "Brief / Concept"
 
     return None
 
 
-# ── Confidentiality keyword maps ──────────────────────────────────────────
-_CONFIDENTIAL_KEYWORDS = [
-    "contract", "contracts", "agreement", "nda", "loa", "loi", "mou",
-    "fee", "fees", "budget", "budgets", "cost", "costs", "pricing",
-    "invoice", "invoices", "payment", "payments", "financial", "finance",
-    "salary", "salaries", "remuneration",
-    "legal", "litigation", "arbitration", "dispute",
-    "personal", "private", "confidential",
-    "tender_price", "bid_price", "rate_card",
-]
+# ── Asset type hint — format + is_data_hint only ─────────────────────────
+_HARD_DATA_FORMATS = {"CSV", "XLSX", "XLS", "JSON", "SHP", "GEOJSON", "KML", "GPKG"}
 
-_SENSITIVE_KEYWORDS = [
-    "internal", "draft", "wip", "memo", "minutes", "meeting_minutes",
-    "rfi", "transmittal", "correspondence",
-    "staff", "personnel", "hr", "preliminary",
-]
+def _asset_type_hint(meta: dict) -> str | None:
+    """
+    Pre-compute asset_type from format + Layer 1 is_data_hint.
+    No filename/folder keyword matching — is_data_hint already encoded that
+    via content-structure analysis.  This function only translates format
+    facts and the pre-computed data hint into an asset_type suggestion.
+    """
+    fmt  = (meta.get("format") or "").upper()
+    hint = meta.get("is_data_hint", "Unlikely")
 
+    if fmt in _HARD_DATA_FORMATS:
+        return "Data"
+    if fmt in {"DWG", "DXF", "RVT", "NWD"}:
+        return "Drawing"
+    if fmt == "IFC":
+        return "Drawing"   # default; content override handled by LLM
+    if hint == "Likely":
+        return "Data"
+    return None
+
+
+# ── Confidentiality hint — content structure analysis ─────────────────────
 def _confidentiality_hint(meta: dict) -> str | None:
     """
-    Pre-compute confidentiality from filename + folder path keywords.
-    Returns 'Confidential', 'Sensitive', or None (let LLM decide).
-    """
-    filename  = (meta.get("filename") or "").lower()
-    path_low  = (meta.get("file_path") or "").lower()
-    combined  = filename + " " + path_low
-    seg_str   = " ".join(s.lower() for s in (meta.get("path_segments") or []))
+    Detect confidentiality level from content structure and metadata patterns.
+    No keyword lists — those are English-only and fail on Arabic/French/other
+    language projects or when clients use internal terminology.
 
-    if any(k in combined for k in _CONFIDENTIAL_KEYWORDS):
-        return "Confidential"
-    if any(k in seg_str for k in _CONFIDENTIAL_KEYWORDS):
-        return "Confidential"
-    if any(k in combined for k in _SENSITIVE_KEYWORDS):
-        return "Sensitive"
-    if any(k in seg_str for k in _SENSITIVE_KEYWORDS):
-        return "Sensitive"
+    What we measure (all language-agnostic structural signals):
+
+    currency_density   — international currency symbols + codes ($ £ € ¥ SAR
+                         AED QAR USD EUR GBP) followed by numbers.  Presence
+                         of 3+ hits strongly suggests financial content.
+
+    clause_depth       — numbered paragraph structure like 1.1, 1.1.1, or
+                         Article/Clause/Section N.  Deep clause nesting is
+                         the structural fingerprint of legal agreements.
+
+    signature_blocks   — runs of underscores (______) or dots (......) used
+                         as signature/date fill-in lines.  Formal execution
+                         markers.
+
+    fee_percentage     — numbers followed by % in quantity (fee proposals,
+                         cost plans, and budget sheets are full of these).
+
+    revision_markers   — Rev/v + number in content body (not just filename).
+                         Multiple revision entries → internal working document.
+
+    draft_watermark    — the word DRAFT or NOT FOR ISSUE appearing in all-caps
+                         blocks (common watermark pattern regardless of language).
+    """
+    content = (meta.get("content_sample") or "")
+    if not content:
+        return None
+
+    conf_score = 0
+    sens_score = 0
+
+    # ── Currency amounts ──────────────────────────────────────────────────
+    currency_hits = len(re.findall(
+        r"[\$£€¥]\s?\d[\d,\.]*"                          # symbol-prefix
+        r"|\b\d[\d,\.]+\s*(?:SAR|AED|QAR|USD|EUR|GBP)\b" # number-suffix code
+        r"|\b(?:SAR|AED|QAR|USD|EUR|GBP)\s?\d[\d,\.]+",   # code-prefix
+        content, re.IGNORECASE,
+    ))
+    if   currency_hits >= 3:  conf_score += 3
+    elif currency_hits >= 2:  conf_score += 2
+    elif currency_hits >= 1:  conf_score += 1
+
+    # ── Legal clause numbering depth ──────────────────────────────────────
+    # 3-level numbering (1.1.1) is the structural fingerprint of legal/contract
+    # documents — almost never appears in technical drawings or reports.
+    # Even a single instance is meaningful; multiple instances are conclusive.
+    deep_clauses = len(re.findall(r"^\s*\d+\.\d+\.\d+", content, re.MULTILINE))
+    flat_clauses = len(re.findall(r"^\s*\d+\.\d+\s", content, re.MULTILINE))
+    if   deep_clauses >= 2:   conf_score += 3   # very strong legal signal
+    elif deep_clauses >= 1:   conf_score += 2   # strong — rarely appears elsewhere
+    elif flat_clauses >= 5:   conf_score += 2
+    elif flat_clauses >= 2:   conf_score += 1
+
+    # ── Signature / date fill blocks ──────────────────────────────────────
+    sig_blocks = len(re.findall(r"_{5,}|\.{8,}", content))
+    if   sig_blocks >= 3:     conf_score += 2
+    elif sig_blocks >= 1:     conf_score += 1
+
+    # ── Percentage values (fee structures, cost plans) ────────────────────
+    pct_hits = len(re.findall(r"\d+(?:\.\d+)?\s*%", content))
+    if   pct_hits >= 5:       conf_score += 2
+    elif pct_hits >= 2:       conf_score += 1
+
+    # ── Revision markers in content body (internal WIP) ───────────────────
+    rev_in_content = len(re.findall(r"\bRev(?:ision)?\s*[A-Z\d]|\bv\d+\b", content, re.IGNORECASE))
+    if   rev_in_content >= 3: sens_score += 2
+    elif rev_in_content >= 1: sens_score += 1
+
+    # ── Draft watermark (structural: all-caps block word) ─────────────────
+    if re.search(r"\bDRAFT\b|\bNOT FOR ISSUE\b|\bINTERNAL USE\b", content, re.IGNORECASE):
+        sens_score += 2
+
+    # ── Score → label ─────────────────────────────────────────────────────
+    if   conf_score >= 4:     return "Confidential"
+    elif conf_score >= 2:     return "Sensitive"
+    elif sens_score >= 2:     return "Sensitive"
     return None
 
 
@@ -163,24 +220,42 @@ def _format_path_segments(meta: dict, input_path: Path, file_path: Path) -> str:
 
 
 def _format_filename_signals(meta: dict) -> str:
-    """Render filename_signals as a compact bullet block for the prompt."""
+    """
+    Render filename_signals as a compact block for the prompt.
+    Presents raw structural tokens so the LLM can interpret meaning
+    without pre-baked keyword mappings.
+    """
     signals = meta.get("filename_signals") or {}
     if not signals:
         return "  (not available — old Layer 1 output)"
 
     lines = []
-    if signals.get("discipline_code"):
-        lines.append(f"  Discipline:    {signals['discipline_code']}")
-    if signals.get("status_tag"):
-        lines.append(f"  Status:        {signals['status_tag']}")
-    if signals.get("version"):
-        lines.append(f"  Version:       {signals['version']}")
-    if signals.get("drawing_number"):
-        lines.append(f"  Drawing No.:   {signals['drawing_number']}")
-    if signals.get("has_date_in_name"):
-        lines.append("  Date in name:  yes")
 
-    return "\n".join(lines) if lines else "  (no AEC signals detected in filename)"
+    # Raw stem first — LLM reads the full name
+    if signals.get("raw_stem"):
+        lines.append(f"  Full stem:       {signals['raw_stem']}")
+
+    # Code tokens: short ALL-CAPS segments — LLM interprets meaning
+    codes = signals.get("code_tokens")
+    if codes:
+        lines.append(f"  Code tokens:     {' | '.join(codes)}"
+                     "  ← discipline / status / zone codes — LLM interprets")
+
+    if signals.get("drawing_number"):
+        lines.append(f"  Drawing ref:     {signals['drawing_number']}"
+                     "  ← strong signal: this is a drawing file")
+    if signals.get("version"):
+        lines.append(f"  Version:         {signals['version']}")
+    if signals.get("numeric_tokens"):
+        lines.append(f"  Numeric tokens:  {' | '.join(signals['numeric_tokens'])}"
+                     "  ← zone / phase / sequence IDs")
+    if signals.get("has_date_in_name"):
+        lines.append("  Date in name:    yes")
+    if signals.get("token_count") is not None:
+        lines.append(f"  Token count:     {signals['token_count']}"
+                     "  (≥5 suggests structured naming convention)")
+
+    return "\n".join(lines) if lines else "  (no structural signals detected)"
 
 
 # ── Prompt ────────────────────────────────────────────────────────────────
@@ -211,18 +286,24 @@ FOLDER CONTEXT  (project root → parent folder)
   Read every segment — each level can encode discipline, phase, and date.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-FILENAME SIGNALS  (pre-parsed by Layer 1)
+FILENAME SIGNALS  (structural token extraction — you interpret meaning)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 {filename_signals_block}
 
+  Code tokens are short ALL-CAPS segments from the filename.  Interpret them
+  using your AEC domain knowledge (ARCH → Architecture, MEP → M/E/P, IFC →
+  Issued For Construction, WIP → Work In Progress, etc.).  A drawing_ref
+  confirms this is a drawing file regardless of extension.
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-LIFECYCLE HINT  (pre-computed from status tag)
+LIFECYCLE HINT  (pre-computed from content structure)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   {lifecycle_hint_str}
 
-  This hint comes from the status code in the filename (e.g. IFC, AFC, AS-BUILT).
-  It is a strong signal when present.  Override it ONLY if the folder path or
-  content clearly contradicts it.
+  This hint is derived from structural signals in the content and filename
+  (signature blocks + date fields, drawing reference patterns, revision tables,
+  as-built markers) — not from a keyword list.  It is a strong signal when
+  present.  Override it ONLY if the folder path or content clearly contradicts it.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ASSET TYPE HINT  (pre-computed from format + Layer 1 data signals)
@@ -235,14 +316,14 @@ ASSET TYPE HINT  (pre-computed from format + Layer 1 data signals)
   Raw Layer 1 data signal: {is_data_hint}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-CONFIDENTIALITY HINT  (pre-computed from filename + folder keywords)
+CONFIDENTIALITY HINT  (pre-computed from content structure)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   {confidentiality_hint_str}
 
-  This hint was computed by matching confidentiality keywords in the filename
-  and folder path (contract, fee, budget, nda, legal, invoice, draft, wip, memo...).
-  Treat it as a strong default for confidentiality.
-  Override ONLY if the content sample clearly contradicts it.
+  This hint is derived from structural signals in the extracted content:
+  currency amounts ($ £ € SAR AED…), legal clause numbering depth (1.1.1…),
+  signature/date fill blocks (______), percentage values, and draft watermarks.
+  No filename keywords are used.  Override only if content clearly contradicts.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 CONTENT SAMPLE
