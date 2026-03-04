@@ -29,7 +29,7 @@ FIELDNAMES = [
     "information_type", "year", "domain", "scale", "lifecycle",
     "asset_type", "short_summary",
     "governance", "confidentiality", "confidence",
-    "age_warning", "risk_level", "action", "review_reasons",
+    "age_warning", "review_priority", "action", "review_reasons",
     "_reasoning", "llm_status", "processed_at",
 ]
 
@@ -127,7 +127,7 @@ def process_file(file_path: Path, client: OpenAI, config: dict, input_path: Opti
         "confidentiality":     l3["confidentiality"],
         "confidence":          l2.get("confidence", "Low"),
         "age_warning":         l3["age_warning"],
-        "risk_level":          l3["risk_level"],
+        "review_priority":     l3["review_priority"],
         "action":              l3["action"],
         "review_reasons":      l3["review_reasons"],
         # Meta
@@ -200,11 +200,11 @@ def run(
                 row = process_file(fp, client, config)
                 writer.writerow(row)
                 f.flush()
-                risk   = row["risk_level"]
+                priority = row["review_priority"]
                 domain = row["domain"][:20]
-                print(f"✓  {domain:<20} | {risk}")
+                print(f"✓  {domain:<20} | {priority}")
                 ok_count += 1
-                risk_counts[risk] = risk_counts.get(risk, 0) + 1
+                risk_counts[priority] = risk_counts.get(priority, 0) + 1
                 if row.get("llm_status"):
                     llm_fail_count += 1
                 if on_progress:

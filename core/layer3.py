@@ -43,53 +43,50 @@ def layer3_trust(
     except Exception:
         pass
 
-    # ── Hard flags → force High risk ─────────────────────────────────────
-    hard_flags = []
-    if confidentiality == "Confidential": hard_flags.append("confidential file")
-    if not llm_ok:                        hard_flags.append("LLM classification failed")
-    if age_warning.startswith("WARNING"): hard_flags.append("file predates project")
+    # ── Critical flags (requires manual review) ──────────────────────────
+    critical = []
+    if confidentiality == "Confidential": critical.append("confidential")
+    if not llm_ok:                        critical.append("llm failed")
+    if age_warning.startswith("WARNING"): critical.append("outdated file")
 
-    # ── Soft flags → accumulate ───────────────────────────────────────────
-    soft_flags = []
-    if governance == "Unknown":           soft_flags.append("source unclear")
-    if confidence == "Low":               soft_flags.append("low classification confidence")
-    if domain     == "Unknown":           soft_flags.append("domain unidentified")
-    if ("no extraction" in coverage or
-            "extraction failed" in coverage):
-        soft_flags.append("content unreadable — binary or error")
+    # ── Warning flags (requires review) ───────────────────────────────────
+    warnings = []
+    if governance == "Unknown":           warnings.append("unknown source")
+    if confidence == "Low":               warnings.append("low confidence")
+    if domain == "Unknown":               warnings.append("unknown domain")
+    if "extraction failed" in coverage:   warnings.append("unreadable content")
 
-    review_reasons = hard_flags + soft_flags
+    review_reasons = critical + warnings
 
-    # ── Risk level ────────────────────────────────────────────────────────
-    if hard_flags:
-        risk_level = "High"
-    elif len(soft_flags) >= 2:
-        risk_level = "High"
-    elif len(soft_flags) == 1:
-        risk_level = "Medium"
+    # ── Review priority (determine if manual review is needed) ────────────
+    if critical:
+        review_priority = "Urgent"
+    elif len(warnings) >= 2:
+        review_priority = "High"
+    elif warnings:
+        review_priority = "Medium"
     else:
-        risk_level = "Low"
+        review_priority = "Low"
 
     # ── Recommended action ────────────────────────────────────────────────
-    if risk_level == "Low":
+    if review_priority == "Low":
         action = "Auto-process"
     else:
         actions = []
-        if "confidential file"             in review_reasons: actions.append("Legal / PM review")
-        if "LLM classification failed"     in review_reasons: actions.append("Manual classification")
-        if "low classification confidence" in review_reasons: actions.append("Manual classification")
-        if "file predates project"         in review_reasons: actions.append("Verify relevance with project team")
-        if "source unclear"                in review_reasons: actions.append("Verify source with project team")
-        if "content unreadable"            in review_reasons: actions.append("Check file integrity")
-        seen = set()
-        actions = [a for a in actions if not (a in seen or seen.add(a))]
-        action  = " + ".join(actions) if actions else "Spot-check recommended"
+        if "confidential" in review_reasons:    actions.append("Legal review")
+        if "llm failed" in review_reasons:      actions.append("Manual classification")
+        if "low confidence" in review_reasons:  actions.append("Manual review")
+        if "outdated file" in review_reasons:   actions.append("Verify relevance")
+        if "unknown source" in review_reasons:  actions.append("Verify source")
+        if "unreadable content" in review_reasons: actions.append("Check file")
+        actions = list(dict.fromkeys(actions))  # deduplicate
+        action = " → ".join(actions) if actions else "Spot-check"
 
     return {
         "governance":          governance,
         "confidentiality":     confidentiality,
         "age_warning":         age_warning,
-        "risk_level":          risk_level,
+        "review_priority":     review_priority,
         "action":              action,
         "review_reasons":      ", ".join(review_reasons) if review_reasons else "",
         "extraction_coverage": coverage,

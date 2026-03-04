@@ -25,6 +25,7 @@ _FORMAT_DATA_SCORE = {
 
 
 def _score_content_structure(content: str) -> int:
+  """Score likelihood that content contains data/tables (not just narrative)."""
   if not content or len(content.strip()) < 40:
     return 0
   lines = [l for l in content.splitlines() if l.strip()]
@@ -35,57 +36,81 @@ def _score_content_structure(content: str) -> int:
   tokens = re.split(r"[\s,|\t;/]+", content)
   tokens = [t for t in tokens if t]
   
-  # Numeric density (data files are full of numbers)
+  # ── Numeric density (data files have lots of numbers) ─────────────────
   if tokens:
     numeric_ratio = sum(1 for t in tokens if re.fullmatch(r"-?\d+([.,]\d+)?", t)) / len(tokens)
     if   numeric_ratio > 0.35:  score += 3
     elif numeric_ratio > 0.15:  score += 1
     elif numeric_ratio < 0.03:  score -= 1
   
-  # JSON/key:value structure
+  # ── Percentages & statistics (common in data) ────────────────────────
+  pct_hits = len(re.findall(r"\d+(?:\.\d+)?%", content))
+  stats_hits = len(re.findall(r"\b(Mean|Average|Total|Count|Sum|Min|Max)\b", content, re.IGNORECASE))
+  if pct_hits >= 3 or stats_hits >= 2:  score += 2
+  elif pct_hits >= 1 or stats_hits >= 1: score += 1
+  
+  # ── JSON/key:value structure ──────────────────────────────────────────
   json_hits = len(re.findall(r'"\s*:\s*|\w+\s*:', content))
   if json_hits >= 6:      score += 3
   elif json_hits >= 3:    score += 1
   
-  # Delimiter density (CSV/tabular)
+  # ── Delimiter density (CSV/tabular) ───────────────────────────────────
   delims = len(re.findall(r"[,|\t;]", content)) / len(lines)
   if   delims > 4:    score += 3
   elif delims > 1.5:  score += 1
   elif delims < 0.3:  score -= 1
   
-  # Column regularity + header pattern
+  # ── Column regularity + header pattern ────────────────────────────────
   if delims > 1.0 and len(lines) >= 3:
     cols = [len(l.split()) for l in lines]
-    cv = (sum((x - sum(cols)/len(cols))**2 for x in cols) / len(cols)) ** 0.5 / (sum(cols)/len(cols))
-    if   cv < 0.3:  score += 2
-    elif cv < 0.6:  score += 1
+    mean_col = sum(cols) / len(cols)
+    if mean_col > 0:
+      cv = (sum((x - mean_col)**2 for x in cols) / len(cols)) ** 0.5 / mean_col
+      if   cv < 0.3:  score += 2
+      elif cv < 0.6:  score += 1
   
-  # Table markers
-  if re.search(r"\bColumns:\b|\bSheets:\b|\bFeatures\b", content):
+  # ── Data/table labels & markers ───────────────────────────────────────
+  label_markers = len(re.findall(
+    r"\b(Table|Figure|Dataset|Results|Data|Statistics|Survey|Spreadsheet|"
+    r"Columns|Rows|Fields|Records|Entries|Observations|Variables)\b",
+    content, re.IGNORECASE
+  ))
+  if label_markers >= 3:  score += 3
+  elif label_markers >= 1: score += 2
+  
+  # ── Layer 1 extraction markers (e.g., "Columns: field1, field2") ──────
+  if re.search(r"\b(Columns|Sheets|Fields|Features|Records|Rows)\s*:", content):
     score += 2
   
   return score
 
 
 def _is_data_hint(file_path: Path, content: str) -> str:
+  """Detect if file contains data (structured, semi-structured, or embedded in docs)."""
   ext = file_path.suffix.lower()
   score = _FORMAT_DATA_SCORE.get(ext, 0)
+  
+  # Hard data formats = definitely data
   if score >= 5:
     return "Likely"
-
+  
+  # Filename drawing number = probably not data
   if re.search(r"\b[A-Za-z]{1,4}[.\-]\d{3,5}\b", file_path.stem):
     score -= 2
-
+  
+  # Analyze content structure for data signals
   if content and ext not in {
     ".dwg", ".rvt", ".nwd", ".dwf",
     ".mp4", ".mov", ".jpg", ".jpeg", ".png", ".tiff", ".tif",
-    ".msg",
+    ".msg", ".eml",  # emails rarely contain data
   }:
-    score += _score_content_structure(content)
-
-  if   score >= 4:  return "Likely"
-  elif score >= 1:  return "Possible"
-  else:             return "Unlikely"
+    content_score = _score_content_structure(content)
+    score += content_score
+  
+  # More lenient thresholds: easier to mark as data
+  if   score >= 4:  return "Likely"      # Clear data signals
+  elif score >= 1:  return "Possible"    # Some data indicators
+  else:             return "Unlikely"    # No data signals
 
 
 # ── Lifecycle hint ─────────────────────────────────────────────────────
@@ -146,18 +171,25 @@ def _lifecycle_hint(meta: dict) -> str | None:
 _HARD_DATA_FORMATS = {"CSV", "XLSX", "XLS", "JSON", "SHP", "GEOJSON", "KML", "GPKG"}
 
 def _asset_type_hint(meta: dict) -> str | None:
-    """Map format → asset type: CSV/XLSX → Data, DWG/RVT → Drawing."""
+    """Map format + data signals → asset type hint. Data can be embedded in any format."""
     fmt  = (meta.get("format") or "").upper()
     hint = meta.get("is_data_hint", "Unlikely")
-
+    
+    # Hard data formats → always Data
     if fmt in _HARD_DATA_FORMATS:
         return "Data"
+    
+    # Technical/BIM formats → always Drawing
     if fmt in {"DWG", "DXF", "RVT", "NWD"}:
         return "Drawing"
     if fmt == "IFC":
-        return "Drawing"   # default; content override handled by LLM
-    if hint == "Likely":
+        return "Drawing"
+    
+    # If is_data_hint is positive, likely contains data (even if format is PDF/Word)
+    if hint in {"Likely", "Possible"}:
         return "Data"
+    
+    # No data signals detected
     return None
 
 
@@ -515,14 +547,30 @@ CONFIDENTIALITY RULES (apply in order):
 
 ─── ASSET_TYPE ───────────────────────────────────────────────────────────
 Pick one:
-  Data         — structured/semi-structured datasets: spreadsheets with measurement
-                 columns, GIS layers, survey tables, sensor outputs, inventories,
-                 BIM property sets, census extracts
-  Document     — narrative or formatted content: reports, specs, contracts,
-                 correspondence, standards, presentations, PDFs
+  Data         — any structured/semi-structured numerical or categorical content:
+                 • Hard data: CSV, Excel, JSON, GIS layers, databases, sensor feeds
+                 • Embedded data: tables inside PDFs/Word, spreadsheets inside zips,
+                   survey results, inventory lists, measurement data in any format,
+                   BIM property sets, sensor tables, experimental results
+                 • Signal: many numbers, columns, rows, statistics, percentages,
+                   repetitive structure, lookup tables, records, entries
+  Document     — narrative or text-heavy content: reports, specifications, 
+                 contracts, correspondence, standards, meeting notes, guides, 
+                 presentations, emails, regulations
   Drawing      — geometric/spatial representations: CAD, BIM models, floor plans,
-                 sections, elevations, site plans
-  Media        — non-geometric visual content: photos, renders, videos, infographics
+                 sections, elevations, site plans, schematics, diagrams
+  Media        — non-geometric visual or multimedia: photos, renders, videos, 
+                 infographics, presentations, audio files
+
+ASSET_TYPE RULES:
+  1. Always check is_data_hint FIRST. If "Likely" or "Possible" → default to Data.
+  2. Data can be embedded in PDFs, Word docs, or archives — don't require CSV/Excel.
+  3. If the content sample shows tables, statistics, inventories, or measurement
+     records → Data, regardless of file format.
+  4. Tables inside reports → mark as Data if they represent a dataset (survey,
+     measurements, inventory). Mark as Document if table is just illustrative.
+  5. If unsure between Data and Document, choose Data if data_hint is present.
+  6. GIS files (.shp, .kml, .geojson) → Data (unless they are cartographic renders)
   Archive      — bundled or compressed collections of other assets
   Unknown
 
