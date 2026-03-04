@@ -5,6 +5,7 @@ python-pptx
 pandas
 pillow
 python-dotenv
+pyyaml
 fastapi
 uvicorn
 celery

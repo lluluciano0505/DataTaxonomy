@@ -1,0 +1,46 @@
+# DataTaxonomy Configuration
+# Modify this file to change project, paths, and processing settings
+# No need to edit Python code!
+
+# ── Project Metadata ──────────────────────────────────────────────────
+project:
+  name: "Fælledby Masterplan"
+  location: "Copenhagen, Denmark"
+  year_range: [2019, 2026]
+  lead_firm: "Henning Larsen"
+  consultants:
+    - "MOE"
+    - "BirdLife Denmark"
+    - "VIVA Landscape"
+    - "Niras"
+  authorities:
+    - "Copenhagen Municipality"
+    - "By & Havn"
+    - "Danish EPA"
+  drawing_code: "FLB-[FIRM]-[PHASE]-[DISCIPLINE]-[TYPE]-[NUMBER]"
+  notes: "Timber-based rural-urban community. Focus on biodiversity and local ecology."
+
+# ── Processing Paths ──────────────────────────────────────────────────
+paths:
+  # Input directory (folder containing files to process)
+  # Can be absolute path or relative to home (~)
+  input_dir: "~/Desktop/Henning Larsen/Fælledby"
+  
+  # Output CSV file
+  output_csv: "test_output.csv"
+
+# ── Processing Settings ───────────────────────────────────────────────
+processing:
+  # Number of files to sample (null = process all files)
+  sample_n: 20
+  
+  # LLM Model (from OpenRouter)
+  model: "google/gemini-2.0-flash-001"
+
+# ── Dashboard Settings ────────────────────────────────────────────────
+dashboard:
+  # Port for Streamlit dashboard
+  port: 8501
+  
+  # Auto-launch browser (true/false)
+  auto_launch: true
