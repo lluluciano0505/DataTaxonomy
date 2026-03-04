@@ -6,37 +6,37 @@ from typing import Optional
 
 # ── Info type map ─────────────────────────────────────────────────────────
 INFO_TYPE_MAP = {
-    ".pdf":     "Document — see content_sample",
-    ".docx":    "Narrative / Textual",
-    ".doc":     "Narrative / Textual",
-    ".txt":     "Narrative / Textual",
-    ".pptx":    "Visual / Presentation",
-    ".xlsx":    "Quantitative / Tabular",
-    ".xls":     "Quantitative / Tabular",
-    ".csv":     "Quantitative / Tabular",
-    ".json":    "Quantitative / Tabular",
-    ".dwg":     "Schematic / Technical",
-    ".dxf":     "Schematic / Technical",
-    ".dwf":     "Schematic / Technical",          # ← NEW: Design Web Format
-    ".ifc":     "Schematic / BIM",
-    ".rvt":     "Schematic / BIM",
-    ".nwd":     "Schematic / BIM",                # ← NEW: Navisworks
-    ".jpg":     "Visual / Media",
-    ".jpeg":    "Visual / Media",
-    ".png":     "Visual / Media",
-    ".tiff":    "Visual / Media",
-    ".tif":     "Visual / Media",
-    ".mp4":     "Visual / Media",                 # ← NEW: video
-    ".mov":     "Visual / Media",                 # ← NEW: video
-    ".shp":     "Spatial / Cartographic",
-    ".geojson": "Spatial / Cartographic",
-    ".kml":     "Spatial / Cartographic",
-    ".gpkg":    "Spatial / Cartographic",         # ← NEW: GeoPackage
-    ".eml":     "Narrative / Email",
-    ".msg":     "Narrative / Email",
+    ".pdf":     "Document",
+    ".docx":    "Textual",
+    ".doc":     "Textual",
+    ".txt":     "Textual",
+    ".pptx":    "Presentation",
+    ".xlsx":    "Tabular",
+    ".xls":     "Tabular",
+    ".csv":     "Tabular",
+    ".json":    "Tabular",
+    ".dwg":     "Technical",
+    ".dxf":     "Technical",
+    ".dwf":     "Technical",
+    ".ifc":     "BIM",
+    ".rvt":     "BIM",
+    ".nwd":     "BIM",
+    ".jpg":     "Image",
+    ".jpeg":    "Image",
+    ".png":     "Image",
+    ".tiff":    "Image",
+    ".tif":     "Image",
+    ".mp4":     "Video",
+    ".mov":     "Video",
+    ".shp":     "Spatial",
+    ".geojson": "Spatial",
+    ".kml":     "Spatial",
+    ".gpkg":    "Spatial",
+    ".eml":     "Email",
+    ".msg":     "Email",
     ".zip":     "Archive",
-    ".7z":      "Archive",                        # ← NEW
-    ".rar":     "Archive",                        # ← NEW
+    ".7z":      "Archive",
+    ".rar":     "Archive",
 }
 
 # ── PDF extraction config ─────────────────────────────────────────────────
@@ -46,10 +46,6 @@ PDF_MID_SAMPLE = 2
 PDF_MAX_CHARS  = 2400
 DEFAULT_MAX_CHARS = 800
 
-# Data-detection moved to Layer 2 to centralise classification logic.
-
-
-# Size thresholds (KB)
 _SIZE_CATEGORIES = [
     (0,     50,    "tiny"),
     (50,    500,   "small"),
@@ -67,12 +63,7 @@ def _find_years_in_text(text: str) -> list[str]:
 
 
 def _extract_year(filename: str, content: str = "", file_path: Optional[Path] = None) -> Optional[str]:
-    """
-    Priority order:
-      1. Year in filename (most reliable)
-      2. Most-frequent year in content (noise-filtered)
-      3. File OS modification date (fallback — better than nothing)
-    """
+    """Year priority: filename → content frequency → file mtime."""
     filename_years = _find_years_in_text(filename)
     if filename_years:
         return max(filename_years, key=int)
@@ -111,107 +102,9 @@ def _cov_chars(content: str, cap: int, label: str = "") -> str:
     return f"{label} — {base}" if label else base
 
 
-# ── Data hint — content structure analysis ────────────────────────────────
-def _score_content_structure(content: str) -> int:
-    """
-    Analyse the structural pattern of extracted text to decide if it looks
-    like tabular/structured data.  Language-agnostic: works in Arabic, French,
-    Chinese, or any naming convention because it measures *shape*, not words.
-
-    Signals measured
-    ────────────────
-    numeric_density   — what fraction of tokens are numbers?
-                        Data files are full of numbers; narrative docs are not.
-    delimiter_density — frequency of field separators (, | \t ;) per line.
-                        High density → columnar / tabular structure.
-    row_regularity    — do lines have a similar token count AND high delimiter
-                        density?  Checked together because word-wrapped prose
-                        also has regular line lengths (false positive if checked
-                        alone).
-    header_pattern    — does the first non-empty line look like a header row
-                        (3+ delimiter-separated short tokens, matching count
-                        in the second line)?
-
-    Each signal contributes ±points independently so they combine gracefully.
-    No language keywords are used.
-    """
-    if not content or len(content.strip()) < 40:
-        return 0
-
-    lines = [l for l in content.splitlines() if l.strip()]
-    if len(lines) < 2:
-        return 0
-
-    score = 0
-
-    # ── Numeric density ───────────────────────────────────────────────────
-    tokens = re.split(r"[\s,|\t;/]+", content)
-    tokens = [t for t in tokens if t]
-    if tokens:
-        numeric = sum(1 for t in tokens if re.fullmatch(r"-?\d+([.,]\d+)?", t))
-        num_ratio = numeric / len(tokens)
-        if   num_ratio > 0.35:  score += 3
-        elif num_ratio > 0.15:  score += 1
-        elif num_ratio < 0.03:  score -= 1
-
-    # ── Delimiter density ─────────────────────────────────────────────────
-    delimiters = re.findall(r"[,|\t;]", content)
-    delim_per_line = len(delimiters) / len(lines)
-    if   delim_per_line > 4:   score += 3
-    elif delim_per_line > 1.5: score += 1
-    elif delim_per_line < 0.3: score -= 1
-
-    # ── Row regularity (ONLY when delimiters also present) ────────────────
-    # Word-wrapped prose also has regular line lengths → checking regularity
-    # alone causes false positives.  We require delim_per_line > 1 as a gate
-    # so this bonus only fires for genuinely columnar content.
-    if delim_per_line > 1.0 and len(lines) >= 3:
-        lengths  = [len(l.split()) for l in lines]
-        mean_len = sum(lengths) / len(lengths)
-        if mean_len > 0:
-            variance = sum((x - mean_len) ** 2 for x in lengths) / len(lengths)
-            cv       = (variance ** 0.5) / mean_len
-            if   cv < 0.3:  score += 2
-            elif cv < 0.6:  score += 1
-
-    # ── Header pattern ────────────────────────────────────────────────────
-    first     = lines[0]
-    cols_first = re.split(r"[,|\t;]", first)
-    if len(cols_first) >= 3:
-        avg_col_len = sum(len(c.strip()) for c in cols_first) / len(cols_first)
-        if avg_col_len < 30:
-            score += 2
-            if len(lines) > 1:
-                cols_second = re.split(r"[,|\t;]", lines[1])
-                if len(cols_second) == len(cols_first):
-                    score += 1
-
-    return score
-
-
-def _is_data_hint(file_path: Path, content: str) -> str:
-    """Placeholder kept for backward compatibility.
-
-    The real data-detection logic has been moved to Layer 2. Layer 1 will
-    no longer assert data-vs-document; Layer 2 computes `is_data_hint`
-    from `file_path` and `content_sample` when classifying.
-    """
-    return "Unlikely"
-
-
-# ── NEW: Path segments ────────────────────────────────────────────────────
+# ── Path segments ──────────────────────────────────────────────────────
 def _extract_path_segments(file_path: Path) -> list[str]:
-    """
-    Returns all meaningful folder names in the path (from root down to parent),
-    stripping drive letters and common no-signal roots like 'Users', 'home', etc.
-
-    Example:
-      /Users/luca/Projects/DataTaxonomy/2022Masterplan/03_Design/ARCH/drawings/file.dwg
-      → ['DataTaxonomy', '2022Masterplan', '03_Design', 'ARCH', 'drawings']
-
-    This is far more informative than just `folder = file_path.parent.name`
-    and gives Layer 2 the full context chain.
-    """
+    """Extract meaningful folder names (skipping OS roots like Users, Desktop)."""
     _SKIP = {"users", "user", "home", "documents", "downloads", "desktop",
              "onedrive", "sharepoint", "sites", "shared documents",
              "c:", "d:", "volumes", "mnt", "/"}
@@ -223,40 +116,10 @@ def _extract_path_segments(file_path: Path) -> list[str]:
     return parts[-8:]  # cap at 8 levels — enough context, not noise
 
 
-# ── Filename signals — structural token extraction ────────────────────────
+# ── Filename signals ───────────────────────────────────────────────────
 def _extract_filename_signals(filename: str) -> dict:
-    """
-    Structural parsing of filename segments.  No enumeration of discipline
-    codes or status tags — those lists are English-only and naming-convention-
-    specific.  Instead we extract token shapes and let Layer 2 (LLM) interpret
-    the meaning.
-
-    What we extract
-    ───────────────
-    code_tokens      — all-caps tokens, 2–6 chars, no digits.
-                       These are positional abbreviations (discipline, status,
-                       zone, phase codes).  Passed raw to LLM; it understands
-                       ARCH, MEP, IFC, WIP, GIS regardless of project language.
-
-    version          — structural version/revision pattern: V/R/P + number,
-                       or bare two-digit sequence between separators.
-                       Language-agnostic (same regex works in any project).
-
-    drawing_number   — letter-code + separator + 3–5 digit run (A-001, SK-024).
-                       Strong structural signal that the file is a drawing.
-
-    has_date_in_name — True if YYYYMMDD or YYYY-MM-DD appears in stem.
-
-    numeric_tokens   — standalone numbers between separators (zone IDs, rev
-                       numbers, phase indices like 03, 204, 1001).
-
-    token_count      — total segment count after splitting on separators.
-                       Very high count (>6) → likely structured naming convention.
-                       Very low count (1–2) → freeform or legacy name.
-
-    raw_stem         — full stem passed to Layer 2 so the LLM can read it
-                       directly without lossy pre-parsing.
-    """
+    """Extract structural patterns: code_tokens (ARCH, MEP, WIP),
+    version/revision, drawing numbers, dates, numeric sequences."""
     stem       = Path(filename).stem
     stem_upper = stem.upper()
 
@@ -299,7 +162,7 @@ def _extract_filename_signals(filename: str) -> dict:
     }
 
 
-# ── NEW: Size category ────────────────────────────────────────────────────
+# ── Size category ─────────────────────────────────────────────────────
 def _size_category(size_kb: int) -> str:
     for lo, hi, label in _SIZE_CATEGORIES:
         if hi is None or size_kb < hi:

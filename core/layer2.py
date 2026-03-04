@@ -1,20 +1,6 @@
-"""
-Layer 2 — LLM Domain Classification
-=====================================
-Receives the Layer 1 metadata dict, calls an OpenRouter-compatible LLM, and returns
-a classification dict with domain, scale, lifecycle, asset_type, governance,
-confidentiality, confidence, short_summary, and _reasoning.
-
-Key design decisions
-────────────────────
-• path_segments are injected as a structured folder chain, NOT mixed with content.
-• filename_signals (discipline_code, status_tag, version, drawing_number) are served
-  as pre-parsed facts so the LLM doesn't have to parse raw filenames itself.
-• A lifecycle_hint is pre-computed from status_tag before the LLM call, reducing
-  ambiguity on the most common error class.
-• chain-of-thought via _reasoning field forces the model to reason before classifying.
-• content_sample cap raised from 600 → 1400 chars (Layer 1 provides up to 2400).
-• Retry once at temperature 0.3 on JSON parse failure.
+"""Layer 2 — LLM Domain Classification.
+Pre-computed hints (lifecycle, asset_type, confidentiality, data_likelihood) +
+LLM call to classify domain, scale, governance, confidence & reasoning.
 """
 
 import json
@@ -22,7 +8,7 @@ import re
 from pathlib import Path
 from openai import OpenAI
 
-# ── Data detection config (moved from Layer 1) ──────────────────────────
+# ── Format → data likelihood mapping ────────────────────────────────────
 _FORMAT_DATA_SCORE = {
   ".csv":     5,   ".shp":     5,   ".geojson": 5,
   ".kml":     5,   ".gpkg":    5,
@@ -41,70 +27,43 @@ _FORMAT_DATA_SCORE = {
 def _score_content_structure(content: str) -> int:
   if not content or len(content.strip()) < 40:
     return 0
-
   lines = [l for l in content.splitlines() if l.strip()]
   if len(lines) < 2:
     return 0
-
+  
   score = 0
-
   tokens = re.split(r"[\s,|\t;/]+", content)
   tokens = [t for t in tokens if t]
+  
+  # Numeric density (data files are full of numbers)
   if tokens:
-    numeric = sum(1 for t in tokens if re.fullmatch(r"-?\d+([.,]\d+)?", t))
-    num_ratio = numeric / len(tokens)
-    if   num_ratio > 0.35:  score += 3
-    elif num_ratio > 0.15:  score += 1
-    elif num_ratio < 0.03:  score -= 1
-
-  # ── JSON / key:value / XML signals (semi-structured records) ──────────
-  json_kv_hits = len(re.findall(r'"\s*:\s*|\b\w+\s*:\s*[^\n]{1,40}', content))
-  if json_kv_hits >= 6:
-    score += 3
-  elif json_kv_hits >= 3:
-    score += 1
-
-  xml_tags = len(re.findall(r"<\/?[A-Za-z_\-:]+\b", content))
-  if xml_tags >= 8:
+    numeric_ratio = sum(1 for t in tokens if re.fullmatch(r"-?\d+([.,]\d+)?", t)) / len(tokens)
+    if   numeric_ratio > 0.35:  score += 3
+    elif numeric_ratio > 0.15:  score += 1
+    elif numeric_ratio < 0.03:  score -= 1
+  
+  # JSON/key:value structure
+  json_hits = len(re.findall(r'"\s*:\s*|\w+\s*:', content))
+  if json_hits >= 6:      score += 3
+  elif json_hits >= 3:    score += 1
+  
+  # Delimiter density (CSV/tabular)
+  delims = len(re.findall(r"[,|\t;]", content)) / len(lines)
+  if   delims > 4:    score += 3
+  elif delims > 1.5:  score += 1
+  elif delims < 0.3:  score -= 1
+  
+  # Column regularity + header pattern
+  if delims > 1.0 and len(lines) >= 3:
+    cols = [len(l.split()) for l in lines]
+    cv = (sum((x - sum(cols)/len(cols))**2 for x in cols) / len(cols)) ** 0.5 / (sum(cols)/len(cols))
+    if   cv < 0.3:  score += 2
+    elif cv < 0.6:  score += 1
+  
+  # Table markers
+  if re.search(r"\bColumns:\b|\bSheets:\b|\bFeatures\b", content):
     score += 2
-  elif xml_tags >= 3:
-    score += 1
-
-  lines = [l for l in content.splitlines() if l.strip()]
-  kv_lines = sum(1 for l in lines if re.search(r"\b\w[\w\-]*\s*[:=]\s*[^\n]{1,80}", l))
-  if len(lines) >= 5 and (kv_lines / len(lines)) > 0.4:
-    score += 2
-
-  delimiters = re.findall(r"[,|\t;]", content)
-  delim_per_line = len(delimiters) / len(lines)
-  if   delim_per_line > 4:   score += 3
-  elif delim_per_line > 1.5: score += 1
-  elif delim_per_line < 0.3: score -= 1
-
-  if delim_per_line > 1.0 and len(lines) >= 3:
-    lengths  = [len(l.split()) for l in lines]
-    mean_len = sum(lengths) / len(lengths)
-    if mean_len > 0:
-      variance = sum((x - mean_len) ** 2 for x in lengths) / len(lengths)
-      cv       = (variance ** 0.5) / mean_len
-      if   cv < 0.3:  score += 2
-      elif cv < 0.6:  score += 1
-
-  first     = lines[0]
-  cols_first = re.split(r"[,|\t;]", first)
-  if len(cols_first) >= 3:
-    avg_col_len = sum(len(c.strip()) for c in cols_first) / len(cols_first)
-    if avg_col_len < 30:
-      score += 2
-      if len(lines) > 1:
-        cols_second = re.split(r"[,|\t;]", lines[1])
-        if len(cols_second) == len(cols_first):
-          score += 1
-
-  # ── Table markers from extraction helpers (Layer 1 may include 'Columns:' etc.)
-  if re.search(r"\bColumns:\b|\bSheets:\b|\bColumns\b|\bFeatures\b", content):
-    score += 2
-
+  
   return score
 
 
@@ -129,21 +88,10 @@ def _is_data_hint(file_path: Path, content: str) -> str:
   else:             return "Unlikely"
 
 
-# ── Lifecycle hint — content structure analysis ───────────────────────────
+# ── Lifecycle hint ─────────────────────────────────────────────────────
 def _lifecycle_hint(meta: dict) -> str | None:
-    """
-    Infer lifecycle stage from structural signals in the content sample and
-    filename token shapes.  No enumeration of status-code abbreviations —
-    those are English-centric and naming-convention-specific.
-
-    Instead we look for signals that are structurally distinct regardless of
-    language: approval stamps (date + signature block patterns), clause
-    numbering depth, revision frequency, and percentage-of-completion markers.
-
-    The LLM sees the raw code_tokens (ARCH, IFC, WIP, …) directly and can
-    interpret their meaning; our job here is only to detect coarse lifecycle
-    position from objective structural features.
-    """
+    """Infer lifecycle from structural signals: drawing numbers, signatures,
+    revision tables, clauses, completion markers."""
     content = (meta.get("content_sample") or "")
     signals = meta.get("filename_signals") or {}
 
@@ -198,12 +146,7 @@ def _lifecycle_hint(meta: dict) -> str | None:
 _HARD_DATA_FORMATS = {"CSV", "XLSX", "XLS", "JSON", "SHP", "GEOJSON", "KML", "GPKG"}
 
 def _asset_type_hint(meta: dict) -> str | None:
-    """
-    Pre-compute asset_type from format + Layer 1 is_data_hint.
-    No filename/folder keyword matching — is_data_hint already encoded that
-    via content-structure analysis.  This function only translates format
-    facts and the pre-computed data hint into an asset_type suggestion.
-    """
+    """Map format → asset type: CSV/XLSX → Data, DWG/RVT → Drawing."""
     fmt  = (meta.get("format") or "").upper()
     hint = meta.get("is_data_hint", "Unlikely")
 
@@ -218,36 +161,10 @@ def _asset_type_hint(meta: dict) -> str | None:
     return None
 
 
-# ── Confidentiality hint — content structure analysis ─────────────────────
+# ── Confidentiality hint ───────────────────────────────────────────────
 def _confidentiality_hint(meta: dict) -> str | None:
-    """
-    Detect confidentiality level from content structure and metadata patterns.
-    No keyword lists — those are English-only and fail on Arabic/French/other
-    language projects or when clients use internal terminology.
-
-    What we measure (all language-agnostic structural signals):
-
-    currency_density   — international currency symbols + codes ($ £ € ¥ SAR
-                         AED QAR USD EUR GBP) followed by numbers.  Presence
-                         of 3+ hits strongly suggests financial content.
-
-    clause_depth       — numbered paragraph structure like 1.1, 1.1.1, or
-                         Article/Clause/Section N.  Deep clause nesting is
-                         the structural fingerprint of legal agreements.
-
-    signature_blocks   — runs of underscores (______) or dots (......) used
-                         as signature/date fill-in lines.  Formal execution
-                         markers.
-
-    fee_percentage     — numbers followed by % in quantity (fee proposals,
-                         cost plans, and budget sheets are full of these).
-
-    revision_markers   — Rev/v + number in content body (not just filename).
-                         Multiple revision entries → internal working document.
-
-    draft_watermark    — the word DRAFT or NOT FOR ISSUE appearing in all-caps
-                         blocks (common watermark pattern regardless of language).
-    """
+    """Detect confidential/sensitive content: currency amounts, legal clauses,
+    signatures, percentages, revisions, draft watermarks."""
     content = (meta.get("content_sample") or "")
     if not content:
         return None
