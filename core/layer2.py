@@ -22,6 +22,112 @@ import re
 from pathlib import Path
 from openai import OpenAI
 
+# ── Data detection config (moved from Layer 1) ──────────────────────────
+_FORMAT_DATA_SCORE = {
+  ".csv":     5,   ".shp":     5,   ".geojson": 5,
+  ".kml":     5,   ".gpkg":    5,
+    ".xlsx":    4,   ".xls":     4,   ".json":    3,
+  ".dwg":    -4,   ".rvt":    -4,   ".nwd":    -4,   ".dwf":    -3,
+  ".ifc":    -1,
+  ".mp4":    -4,   ".mov":    -4,
+  ".jpg":    -3,   ".jpeg":   -3,   ".png":    -3,
+  ".tiff":   -3,   ".tif":    -3,
+    ".pdf":     0,   ".pptx":   -1,
+    ".docx":    1,   ".doc":    0,
+  ".eml":    -2,   ".msg":    -2,
+}
+
+
+def _score_content_structure(content: str) -> int:
+  if not content or len(content.strip()) < 40:
+    return 0
+
+  lines = [l for l in content.splitlines() if l.strip()]
+  if len(lines) < 2:
+    return 0
+
+  score = 0
+
+  tokens = re.split(r"[\s,|\t;/]+", content)
+  tokens = [t for t in tokens if t]
+  if tokens:
+    numeric = sum(1 for t in tokens if re.fullmatch(r"-?\d+([.,]\d+)?", t))
+    num_ratio = numeric / len(tokens)
+    if   num_ratio > 0.35:  score += 3
+    elif num_ratio > 0.15:  score += 1
+    elif num_ratio < 0.03:  score -= 1
+
+  # ── JSON / key:value / XML signals (semi-structured records) ──────────
+  json_kv_hits = len(re.findall(r'"\s*:\s*|\b\w+\s*:\s*[^\n]{1,40}', content))
+  if json_kv_hits >= 6:
+    score += 3
+  elif json_kv_hits >= 3:
+    score += 1
+
+  xml_tags = len(re.findall(r"<\/?[A-Za-z_\-:]+\b", content))
+  if xml_tags >= 8:
+    score += 2
+  elif xml_tags >= 3:
+    score += 1
+
+  lines = [l for l in content.splitlines() if l.strip()]
+  kv_lines = sum(1 for l in lines if re.search(r"\b\w[\w\-]*\s*[:=]\s*[^\n]{1,80}", l))
+  if len(lines) >= 5 and (kv_lines / len(lines)) > 0.4:
+    score += 2
+
+  delimiters = re.findall(r"[,|\t;]", content)
+  delim_per_line = len(delimiters) / len(lines)
+  if   delim_per_line > 4:   score += 3
+  elif delim_per_line > 1.5: score += 1
+  elif delim_per_line < 0.3: score -= 1
+
+  if delim_per_line > 1.0 and len(lines) >= 3:
+    lengths  = [len(l.split()) for l in lines]
+    mean_len = sum(lengths) / len(lengths)
+    if mean_len > 0:
+      variance = sum((x - mean_len) ** 2 for x in lengths) / len(lengths)
+      cv       = (variance ** 0.5) / mean_len
+      if   cv < 0.3:  score += 2
+      elif cv < 0.6:  score += 1
+
+  first     = lines[0]
+  cols_first = re.split(r"[,|\t;]", first)
+  if len(cols_first) >= 3:
+    avg_col_len = sum(len(c.strip()) for c in cols_first) / len(cols_first)
+    if avg_col_len < 30:
+      score += 2
+      if len(lines) > 1:
+        cols_second = re.split(r"[,|\t;]", lines[1])
+        if len(cols_second) == len(cols_first):
+          score += 1
+
+  # ── Table markers from extraction helpers (Layer 1 may include 'Columns:' etc.)
+  if re.search(r"\bColumns:\b|\bSheets:\b|\bColumns\b|\bFeatures\b", content):
+    score += 2
+
+  return score
+
+
+def _is_data_hint(file_path: Path, content: str) -> str:
+  ext = file_path.suffix.lower()
+  score = _FORMAT_DATA_SCORE.get(ext, 0)
+  if score >= 5:
+    return "Likely"
+
+  if re.search(r"\b[A-Za-z]{1,4}[.\-]\d{3,5}\b", file_path.stem):
+    score -= 2
+
+  if content and ext not in {
+    ".dwg", ".rvt", ".nwd", ".dwf",
+    ".mp4", ".mov", ".jpg", ".jpeg", ".png", ".tiff", ".tif",
+    ".msg",
+  }:
+    score += _score_content_structure(content)
+
+  if   score >= 4:  return "Likely"
+  elif score >= 1:  return "Possible"
+  else:             return "Unlikely"
+
 
 # ── Lifecycle hint — content structure analysis ───────────────────────────
 def _lifecycle_hint(meta: dict) -> str | None:
@@ -599,6 +705,12 @@ def layer2_domain(
         if lc_hint else
         "No status-tag hint available — infer from folder chain and content."
     )
+
+    # Compute data hint here (moved from Layer 1)
+    try:
+      meta["is_data_hint"] = _is_data_hint(file_path, meta.get("content_sample") or "")
+    except Exception:
+      meta["is_data_hint"] = "Unlikely"
 
     # Asset type hint — pre-computed from format + is_data_hint
     at_hint            = _asset_type_hint(meta)

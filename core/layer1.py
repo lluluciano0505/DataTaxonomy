@@ -46,28 +46,7 @@ PDF_MID_SAMPLE = 2
 PDF_MAX_CHARS  = 2400
 DEFAULT_MAX_CHARS = 800
 
-# ── Data detection config ─────────────────────────────────────────────────
-# Format → base score.  Language-agnostic: works regardless of filename or folder name.
-# Positive = tends to be structured data.  Negative = tends to be document/drawing/media.
-# These are format facts, not cultural assumptions.
-_FORMAT_DATA_SCORE = {
-    # Pure data formats — no ambiguity
-    ".csv":     5,   ".shp":     5,   ".geojson": 5,
-    ".kml":     5,   ".gpkg":    5,
-    # Strong data formats (could occasionally be used as config/template)
-    ".xlsx":    4,   ".xls":     4,   ".json":    2,
-    # Drawing / BIM — almost never raw data
-    ".dwg":    -4,   ".rvt":    -4,   ".nwd":    -4,   ".dwf":    -3,
-    ".ifc":    -1,   # BIM model; lean non-data but content can override
-    # Media — never data
-    ".mp4":    -4,   ".mov":    -4,
-    ".jpg":    -3,   ".jpeg":   -3,   ".png":    -3,
-    ".tiff":   -3,   ".tif":    -3,
-    # Document formats — lean non-data, but content can override
-    ".pdf":    -1,   ".pptx":   -2,
-    ".docx":   -1,   ".doc":    -1,
-    ".eml":    -2,   ".msg":    -2,
-}
+# Data-detection moved to Layer 2 to centralise classification logic.
 
 
 # Size thresholds (KB)
@@ -211,51 +190,13 @@ def _score_content_structure(content: str) -> int:
 
 
 def _is_data_hint(file_path: Path, content: str) -> str:
+    """Placeholder kept for backward compatibility.
+
+    The real data-detection logic has been moved to Layer 2. Layer 1 will
+    no longer assert data-vs-document; Layer 2 computes `is_data_hint`
+    from `file_path` and `content_sample` when classifying.
     """
-    Decides whether a file is likely a structured data asset.
-
-    Strategy
-    ────────
-    1. Format score  — language-agnostic, format is the strongest single signal.
-    2. Content structure score — measures numeric density, delimiter density,
-       row regularity, and header patterns.  Works in any language or naming
-       convention because it analyses *shape*, not keywords.
-    3. Drawing-number guard — a drawing ref in the filename (e.g. A-001, SK-024)
-       is a strong negative signal regardless of format.
-
-    Folder/filename keyword matching is intentionally REMOVED: it fails for
-    non-English projects, client-specific naming conventions, and ambiguous
-    AEC terms ("schedule", "layer", "matrix" = documents in AEC, not data).
-
-    Thresholds:  ≥ 4 → Likely | 1–3 → Possible | ≤ 0 → Unlikely
-    """
-    ext = file_path.suffix.lower()
-
-    # ── Format base score ─────────────────────────────────────────────────
-    score = _FORMAT_DATA_SCORE.get(ext, 0)
-
-    # ── Short-circuit: pure-data formats don't need content analysis ──────
-    if score >= 5:
-        return "Likely"
-
-    # ── Drawing-number guard (language-agnostic — pattern, not words) ─────
-    # E.g. A-001, SK-024, C.003, 10-001 — these tag drawings, never datasets
-    if re.search(r"\b[A-Za-z]{1,4}[.\-]\d{3,5}\b", file_path.stem):
-        score -= 2
-
-    # ── Content structure analysis ────────────────────────────────────────
-    # Only meaningful for formats that can hold either data or narrative text
-    if content and ext not in {
-        ".dwg", ".rvt", ".nwd", ".dwf",
-        ".mp4", ".mov", ".jpg", ".jpeg", ".png", ".tiff", ".tif",
-        ".msg",
-    }:
-        score += _score_content_structure(content)
-
-    # ── Score → label ─────────────────────────────────────────────────────
-    if   score >= 4:  return "Likely"
-    elif score >= 1:  return "Possible"
-    else:             return "Unlikely"
+    return "Unlikely"
 
 
 # ── NEW: Path segments ────────────────────────────────────────────────────
@@ -676,7 +617,6 @@ def layer1_technical(file_path: Path) -> dict:
         "file_path":           str(file_path),
         "content_sample":      content,
         "extraction_coverage": coverage,
-        "is_data_hint":        _is_data_hint(file_path, content),
 
         # ── NEW fields ───────────────────────────────────────────────────
         "size_category":       _size_category(size_kb),

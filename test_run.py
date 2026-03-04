@@ -38,7 +38,7 @@ PROJECT = {
 
 # ── Path Configuration ───────────────────────────────────────────────────
 # ⚠️ Make sure this folder exists on your Mac
-INPUT_PATH = Path.home() / "Desktop" / "Henning Larsen" / "2022Masterplan"
+INPUT_PATH = Path.home() / "Desktop" / "Henning Larsen" / "Fælledby"
 OUTPUT_CSV = Path("test_output.csv")
 
 # ── Build Config ─────────────────────────────────────────────────────────
@@ -64,7 +64,7 @@ if __name__ == "__main__":
                 input_path = INPUT_PATH,
                 output_csv = OUTPUT_CSV,
                 config     = config,
-                sample_n   = 200,
+                sample_n   = 20,
             )
             print(f"✅ Success! Results saved to: {OUTPUT_CSV}")
             print(f"📝 Summary: {summary}")
