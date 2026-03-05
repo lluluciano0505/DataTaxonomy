@@ -20,9 +20,9 @@ paths:
   input_dir: ~/Desktop/Henning Larsen/Fælledby
   output_csv: test_output.csv
 processing:
-  sample_n: 80
+  sample_n: 400
   model: google/gemini-2.0-flash-001
-  parallel_workers: 4
+  parallel_workers: 16
   api_timeout: 30
 dashboard:
   port: 8501
