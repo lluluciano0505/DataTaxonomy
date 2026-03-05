@@ -34,30 +34,7 @@ python main.py --help
 
 ---
 
-## 2) Desktop GUI (Tk)
-
-```bash
-python app.py
-```
-
----
-
-## 3) Startup scripts
-
-### macOS / Linux
-```bash
-chmod +x scripts/startup.sh
-./scripts/startup.sh
-```
-
-### Windows
-```bat
-scripts\run.bat
-```
-
----
-
-## 4) Conda example
+## 2) Conda example
 
 ```bash
 conda run -p /opt/anaconda3 python main.py --no-dashboard
