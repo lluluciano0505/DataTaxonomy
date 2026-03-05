@@ -332,18 +332,14 @@ st.divider()
 st.subheader("🚀 Run Pipeline")
 st.caption("Process files with current configuration")
 
-col_run1, col_run2, col_run3 = st.columns([1, 1, 1])
+config = load_config()
+parallel_workers = config.get("processing", {}).get("parallel_workers", 1)
+sample_n = config.get("processing", {}).get("sample_n", 20)
+
+col_run1, col_run2 = st.columns(2)
 
 with col_run1:
-    parallel_workers = st.slider(
-        "Parallel Workers",
-        min_value=1,
-        max_value=16,
-        value=4,
-        step=1,
-        key="run_parallel",
-        help="Number of concurrent processes"
-    )
+    st.metric("📊 Parallel Workers", f"{parallel_workers} processes")
 
 with col_run2:
     no_dashboard = st.checkbox(
@@ -352,89 +348,126 @@ with col_run2:
         help="Don't launch dashboard after processing"
     )
 
-with col_run3:
-    st.empty()
-
 # Run button
 if st.button("▶️ START PROCESSING", use_container_width=True, key="run_button"):
     st.divider()
     
-    config = load_config()
-    sample_n = config.get("processing", {}).get("sample_n", 20)
+    st.write(f"📊 Running pipeline with **{parallel_workers}** parallel worker(s)...")
     
-    with st.spinner(f"⏳ Processing files (parallel={parallel_workers})..."):
-        st.write("📊 Running pipeline...")
+    # Build command
+    cmd = ["python", "main.py", f"--parallel", str(parallel_workers)]
+    if no_dashboard:
+        cmd.append("--no-dashboard")
+    
+    # Progress tracking
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    log_area = st.empty()
+    
+    try:
+        status_text.write("⏳ Initializing pipeline...")
+        progress_bar.progress(5)
         
-        # Build command
-        cmd = ["python", "main.py", f"--parallel", str(parallel_workers)]
-        if no_dashboard:
-            cmd.append("--no-dashboard")
+        # Run process with real-time output capture
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            universal_newlines=True
+        )
         
-        try:
-            # Run process and capture output
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=3600  # 1 hour timeout
-            )
+        output_lines = []
+        file_count = 0
+        
+        # Read output line by line
+        for line in process.stdout:
+            output_lines.append(line.rstrip())
             
-            # Display output in a text area
-            with st.expander("📋 Processing Log", expanded=True):
-                if result.stdout:
-                    st.code(result.stdout, language="text")
-                if result.stderr:
-                    st.warning("⚠️ Warnings/Errors:")
-                    st.code(result.stderr, language="text")
+            # Update status based on output
+            if "Processing" in line or "Classifying" in line:
+                try:
+                    # Try to extract file count from output
+                    parts = line.split()
+                    for i, part in enumerate(parts):
+                        if part.isdigit() and int(part) > file_count:
+                            file_count = int(part)
+                except:
+                    pass
             
-            # Check result
-            if result.returncode == 0:
-                st.success("✅ Processing completed successfully!")
-                
-                # Show output file info
-                output_csv = Path(config.get("paths", {}).get("output_csv", "test_output.csv"))
-                if output_csv.exists():
-                    file_size = output_csv.stat().st_size / 1024  # KB
-                    st.info(f"📄 Output saved: `{output_csv}` ({file_size:.1f} KB)")
-                    
-                    # Offer to download
-                    with open(output_csv) as f:
-                        csv_data = f.read()
-                    st.download_button(
-                        label="⬇️ Download Results CSV",
-                        data=csv_data,
-                        file_name=output_csv.name,
-                        mime="text/csv",
-                        use_container_width=True
-                    )
-                    
-                    # Next steps
-                    st.divider()
-                    st.subheader("📊 Next Steps")
-                    
-                    col_next1, col_next2 = st.columns(2)
-                    
-                    with col_next1:
-                        if st.button("📈 Open Dashboard", use_container_width=True, key="open_dashboard"):
-                            st.info("🌐 Dashboard will launch at http://localhost:8502")
-                            st.markdown("""
-                            **To view the dashboard:**
-                            1. Open a new terminal
-                            2. Run: `streamlit run dashboard.py`
-                            3. Visit: http://localhost:8502
-                            """)
-                    
-                    with col_next2:
-                        if st.button("📁 Open Output Folder", use_container_width=True, key="open_folder"):
-                            try:
-                                subprocess.Popen(["open", str(output_csv.parent)])
-                                st.success(f"📂 Opening {output_csv.parent}")
-                            except Exception as e:
-                                st.error(f"Could not open folder: {e}")
+            # Estimate progress (0-95%)
+            if sample_n and sample_n > 0:
+                progress = min(95, int((file_count / sample_n) * 90) + 5)
             else:
-                st.error(f"❌ Processing failed with code {result.returncode}")
+                progress = min(95, 5 + (len(output_lines) % 10))
+            
+            progress_bar.progress(progress)
+            status_text.write(f"🔄 Processing: {file_count} files processed...")
+            
+            # Show last 10 lines of output
+            log_area.code("\n".join(output_lines[-10:]), language="text")
         
-        except subprocess.TimeoutExpired:
-            st.error("⏱️ Processing timed out (exceeded 1 hour)")
-        except Exception as e:
-            st.error(f"❌ Error running pipeline: {e}")
+        # Wait for process to complete
+        process.wait()
+        
+        # Display full log
+        st.divider()
+        with st.expander("📋 Full Processing Log", expanded=False):
+            st.code("\n".join(output_lines), language="text")
+        
+        # Check result
+        if process.returncode == 0:
+            progress_bar.progress(100)
+            status_text.success("✅ Processing completed successfully!")
+            
+            # Show output file info
+            output_csv = Path(config.get("paths", {}).get("output_csv", "test_output.csv"))
+            if output_csv.exists():
+                file_size = output_csv.stat().st_size / 1024  # KB
+                st.info(f"📄 Output saved: `{output_csv}` ({file_size:.1f} KB)")
+                
+                # Offer to download
+                with open(output_csv) as f:
+                    csv_data = f.read()
+                st.download_button(
+                    label="⬇️ Download Results CSV",
+                    data=csv_data,
+                    file_name=output_csv.name,
+                    mime="text/csv",
+                    use_container_width=True
+                )
+                
+                # Next steps
+                st.divider()
+                st.subheader("📊 Next Steps")
+                
+                col_next1, col_next2 = st.columns(2)
+                
+                with col_next1:
+                    if st.button("📈 Open Dashboard", use_container_width=True, key="open_dashboard"):
+                        st.info("🌐 Dashboard will launch at http://localhost:8502")
+                        st.markdown("""
+                        **To view the dashboard:**
+                        1. Open a new terminal
+                        2. Run: `streamlit run dashboard.py`
+                        3. Visit: http://localhost:8502
+                        """)
+                
+                with col_next2:
+                    if st.button("📁 Open Output Folder", use_container_width=True, key="open_folder"):
+                        try:
+                            subprocess.Popen(["open", str(output_csv.parent)])
+                            st.success(f"📂 Opening {output_csv.parent}")
+                        except Exception as e:
+                            st.error(f"Could not open folder: {e}")
+        else:
+            progress_bar.progress(100)
+            st.error(f"❌ Processing failed with code {process.returncode}")
+    
+    except subprocess.TimeoutExpired:
+        progress_bar.progress(100)
+        st.error("⏱️ Processing timed out (exceeded 1 hour)")
+    except Exception as e:
+        progress_bar.progress(100)
+        st.error(f"❌ Error running pipeline: {e}")
