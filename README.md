@@ -55,22 +55,22 @@ OPENROUTER_API_KEY=your-key-here
 
 ### 3. Configure your project
 
-**Web UI (推荐，主流程)**
+**Web UI (recommended, primary flow)**
 ```bash
 streamlit run config_ui.py
 ```
-打开友好的配置界面，无需编辑 YAML 文件。包括：
-- 📋 项目信息（名称、位置、年份范围）
-- 📂 文件路径
-- ⚡ 处理设置（文件数、LLM 模型、并行工作进程）
-- 🎨 仪表板和分析选项
+Open the friendly configuration UI without editing YAML. Includes:
+- 📋 Project info (name, location, year range)
+- 📂 File paths
+- ⚡ Processing settings (file count, LLM model, parallel workers)
+- 🎨 Dashboard and analysis options
 
-> 说明：文档默认仅保留网页操作流。
-> 其他启动方式（CLI / GUI / 脚本）见 [RUN_METHODS.md](RUN_METHODS.md)
+> Note: the docs keep the web flow as the default.
+> Other launch methods (CLI / GUI / scripts) are in [docs/RUN_METHODS.md](docs/RUN_METHODS.md)
 
 ### 4. Run the classifier
 
-在 `config_ui.py` 页面中点击 `▶️ START PROCESSING`。
+Click `▶️ START PROCESSING` in the `config_ui.py` page.
 
 Outputs `results.csv` in the project root.
 
