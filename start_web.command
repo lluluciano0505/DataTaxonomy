@@ -1,3 +1,4 @@
+
 #!/bin/bash
 # start_web.command — compatibility wrapper (moved to scripts/start_web.command)
 
