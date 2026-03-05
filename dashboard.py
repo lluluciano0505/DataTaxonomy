@@ -268,20 +268,65 @@ conf_emoji = {"Confidential":"🔒","Sensitive":"🟠","Standard":""}
 
 display_df = filtered[show_cols].copy()
 
-# Add "Show in Finder" action column
-def create_finder_link(file_path):
-    """Create a clickable button to show file in Finder"""
-    if pd.isna(file_path):
-        return "—"
-    return f"[📁 Finder](?show_in_finder={file_path})"
+# Quick file actions
+st.subheader("📂 File Explorer")
+st.caption("Select a file and open its folder location")
 
-display_df.insert(1, "Finder", display_df["file_path"].apply(create_finder_link))
+col1, col2 = st.columns(2)
 
-# Convert file paths to file:// URLs for clickable links
-if "file_path" in display_df.columns:
-    display_df["file_path"] = display_df["file_path"].apply(
-        lambda x: f"file://{x}" if pd.notna(x) and not str(x).startswith("file://") else x
+with col1:
+    selected_file = st.selectbox(
+        "Select a file",
+        options=filtered["filename"].tolist() if len(filtered) > 0 else [],
+        index=None,
+        placeholder="Choose a file..."
     )
+    
+    if selected_file:
+        file_info = filtered[filtered["filename"] == selected_file].iloc[0]
+        file_path = file_info.get("file_path")
+        
+        btn_col1, btn_col2 = st.columns(2)
+        
+        with btn_col1:
+            if st.button("📂 Open Folder", key="open_folder", use_container_width=True):
+                try:
+                    # macOS: open folder containing the file
+                    folder_path = str(Path(file_path).parent)
+                    subprocess.Popen(["open", folder_path])
+                    st.success(f"📂 Opening folder: {Path(file_path).parent.name}/")
+                except Exception as e:
+                    st.error(f"Error: {e}")
+        
+        with btn_col2:
+            if st.button("📁 Show in Finder", key="show_in_finder", use_container_width=True):
+                try:
+                    # macOS: open -R highlights the file in Finder
+                    subprocess.Popen(["open", "-R", file_path])
+                    st.success(f"✨ Highlighting {Path(file_path).name} in Finder...")
+                except Exception as e:
+                    st.error(f"Error: {e}")
+
+with col2:
+    if selected_file:
+        file_info = filtered[filtered["filename"] == selected_file].iloc[0]
+        st.metric("Filename", Path(file_info.get("file_path", "")).name)
+        st.caption(f"**Size:** {file_info.get('size_kb', '—')} KB")
+        st.caption(f"**Type:** {file_info.get('format', '—')}")
+        st.caption(f"**Priority:** {file_info.get('review_priority', '—')}")
+
+st.divider()
+
+# File table with paths displayed
+st.subheader("📋 File List")
+show_cols = ["filename", "file_path", "domain", "scale", "lifecycle", "asset_type", "confidentiality",
+             "governance", "review_priority", "confidence", "year", "short_summary"]
+show_cols = [c for c in show_cols if c in filtered.columns]
+
+priority_emoji = {"Critical":"🔴","Urgent":"🔴","High":"🟠","Medium":"🟡","Low":"🟢"}
+conf_emoji = {"Confidential":"🔒","Sensitive":"🟠","Standard":""}
+
+display_df = filtered[show_cols].copy()
 
 display_df["review_priority"] = display_df["review_priority"].map(lambda x: f"{priority_emoji.get(x,'')} {x}")
 if "confidentiality" in display_df.columns:
@@ -289,16 +334,16 @@ if "confidentiality" in display_df.columns:
         lambda x: f"{conf_emoji.get(x,'')} {x}".strip()
     )
 
-# Configure columns
+# Display file paths as plain text (not clickable)
 st.dataframe(
     display_df, 
     use_container_width=True, 
     height=400,
     column_config={
-        "file_path": st.column_config.LinkColumn(
-            "Open File",
-            help="Click to open file in default application",
-            display_text="📂 Open"
+        "file_path": st.column_config.TextColumn(
+            "File Path",
+            width="large",
+            help="Full path to the file"
         ),
         "filename": st.column_config.TextColumn(
             "File Name",
@@ -307,26 +352,9 @@ st.dataframe(
         "short_summary": st.column_config.TextColumn(
             "Summary",
             width="large"
-        ),
-        "Finder": st.column_config.TextColumn(
-            "Finder",
-            width="small",
-            help="Show in Finder"
         )
     }
 )
-
-st.divider()
-
-# Handle Finder action from URL parameter
-if "show_in_finder" in st.query_params:
-    file_path = st.query_params["show_in_finder"]
-    try:
-        # macOS: open -R opens file in Finder
-        subprocess.Popen(["open", "-R", file_path])
-        st.toast(f"📁 Opening {Path(file_path).name} in Finder...", icon="✅")
-    except Exception as e:
-        st.toast(f"Error: {e}", icon="❌")
 
 csv_bytes = filtered.to_csv(index=False).encode("utf-8")
 st.download_button(label="Download filtered CSV", data=csv_bytes,

@@ -54,21 +54,24 @@ OPENROUTER_API_KEY=your-key-here
 ```
 
 ### 3. Configure your project
-Edit `config.yaml`:
+
+**Option A: Web UI (推荐)**
+```bash
+streamlit run config_ui.py
+```
+打开友好的配置界面，无需编辑 YAML 文件。包括：
+- 📋 项目信息（名称、位置、年份范围）
+- 📂 文件路径
+- ⚡ 处理设置（文件数、LLM 模型、并行工作进程）
+- 🎨 仪表板和分析选项
+
+**Option B: 直接编辑** `config.yaml`
 ```yaml
 project:
   name: "Your Project Name"
   location: "City, Country"
   year_range: [2020, 2026]
   lead_firm: "Your Firm"
-
-paths:
-  input_dir: "~/Desktop/YourProjectFolder"
-  output_csv: "results.csv"
-
-processing:
-  sample_n: 400          # Process 400 files (null = all)
-  model: "google/gemini-2.0-flash-001"
 ```
 
 ### 4. Run the classifier
@@ -108,10 +111,13 @@ DataTaxonomy/
 │   ├── layer2.py              # LLM classification
 │   ├── layer3.py              # Risk & age analysis
 │   └── pipeline.py            # Batch runner, parallel support
+├── pic/
+│   └── DT.jpg                 # Application banner/logo
 ├── config.yaml                # Project config (no code edits needed)
 ├── config_loader.py           # Config parser
-├── main.py                    # Entry point
-├── dashboard.py               # Streamlit dashboard
+├── config_ui.py               # Web-based config manager ⭐ NEW
+├── main.py                    # Entry point (CLI)
+├── dashboard.py               # Results dashboard
 ├── requirements.txt
 ├── .env.example
 └── README.md

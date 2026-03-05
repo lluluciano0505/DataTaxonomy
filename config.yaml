@@ -1,59 +1,32 @@
-# DataTaxonomy Configuration
-# Modify this file to change project, paths, and processing settings
-# No need to edit Python code!
-
-# ── Project Metadata ──────────────────────────────────────────────────
 project:
-  name: "Fælledby Masterplan"
-  location: "Copenhagen, Denmark"
-  year_range: [2019, 2026]
-  lead_firm: "Henning Larsen"
+  name: Fælledby Masterplan
+  location: Copenhagen, Denmark
+  year_range:
+  - 2019
+  - 2026
+  lead_firm: Henning Larsen
   consultants:
-    - "MOE"
-    - "BirdLife Denmark"
-    - "VIVA Landscape"
-    - "Niras"
+  - MOE
+  - BirdLife Denmark
+  - VIVA Landscape
+  - Niras
   authorities:
-    - "Copenhagen Municipality"
-    - "By & Havn"
-    - "Danish EPA"
-  drawing_code: "FLB-[FIRM]-[PHASE]-[DISCIPLINE]-[TYPE]-[NUMBER]"
-  notes: "Timber-based rural-urban community. Focus on biodiversity and local ecology."
-
-# ── Processing Paths ──────────────────────────────────────────────────
+  - Copenhagen Municipality
+  - By & Havn
+  - Danish EPA
+  drawing_code: FLB-[FIRM]-[PHASE]-[DISCIPLINE]-[TYPE]-[NUMBER]
+  notes: Timber-based rural-urban community. Focus on biodiversity and local ecology.
 paths:
-  # Input directory (folder containing files to process)
-  # Can be absolute path or relative to home (~)
-  input_dir: "~/Desktop/Henning Larsen/Fælledby"
-  
-  # Output CSV file
-  output_csv: "test_output.csv"
-
-# ── Processing Settings ───────────────────────────────────────────────
+  input_dir: ~/Desktop/Henning Larsen/Fælledby
+  output_csv: test_output.csv
 processing:
-  # Number of files to sample (null = process all files)
-  sample_n: 400
-  
-  # LLM Model (from OpenRouter)
-  model: "google/gemini-2.0-flash-001"
-
-# ── Dashboard Settings ────────────────────────────────────────────────
+  sample_n: 370
+  model: google/gemini-2.0-flash-001
+  parallel_workers: 8
+  api_timeout: 30
 dashboard:
-  # Port for Streamlit dashboard
   port: 8501
-  
-  # Auto-launch browser (true/false)
   auto_launch: true
-
-# ── Age & Temporal Analysis Settings ───────────────────────────────────
 age_analysis:
-  # Year extraction confidence threshold
-  # "high" = only filename years, "medium" = content + filename, "low" = includes file mtime
-  confidence_level: "medium"
-  
-  # Warn if file predates project start by more than N years
-  # Set to 0 to always warn about pre-project files, -1 to never warn
   warn_predates_years: 10
-  
-  # Warn if file is N years after project end
   warn_postproject_years: 3
