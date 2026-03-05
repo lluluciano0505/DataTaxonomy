@@ -8,6 +8,8 @@ import pandas as pd
 import streamlit as st
 import plotly.express as px
 from pathlib import Path
+import subprocess
+import os
 
 st.set_page_config(
     page_title = "Urban Asset Classifier — Dashboard",
@@ -79,7 +81,7 @@ with left_kpi:
     st.markdown('<div class="section-label">Overview</div>', unsafe_allow_html=True)
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Total Files",   len(filtered))
-    c2.metric("Urgent Review", int((filtered["review_priority"] == "Urgent").sum()))
+    c2.metric("Critical Review", int((filtered["review_priority"] == "Critical").sum()))
     c3.metric("High Priority", int((filtered["review_priority"] == "High").sum()))
     c4.metric("Medium/Low",    int((filtered["review_priority"].isin(["Medium", "Low"])).sum()))
 
@@ -242,7 +244,7 @@ with col4:
     st.subheader("Review Priority")
     st.caption("By domain")
     risk_domain = filtered.groupby(["domain","review_priority"]).size().reset_index(name="count")
-    risk_color  = {"Urgent":"#c92a2a","High":"#e74c3c","Medium":"#f39c12","Low":"#2ecc71"}
+    risk_color  = {"Critical":"#c92a2a","Urgent":"#c92a2a","High":"#e74c3c","Medium":"#f39c12","Low":"#2ecc71"}
     if not risk_domain.empty:
         fig_risk = px.bar(risk_domain, x="count", y="domain", color="review_priority",
                           orientation="h", color_discrete_map=risk_color,
@@ -257,21 +259,74 @@ st.divider()
 
 # ROW 5: Full file table
 st.subheader("File List")
-show_cols = ["filename","domain","scale","lifecycle","asset_type","confidentiality",
+show_cols = ["filename","file_path","domain","scale","lifecycle","asset_type","confidentiality",
              "governance","review_priority","confidence","year","short_summary"]
 show_cols = [c for c in show_cols if c in filtered.columns]
 
-priority_emoji = {"Urgent":"🔴","High":"🟠","Medium":"🟡","Low":"🟢"}
+priority_emoji = {"Critical":"🔴","Urgent":"🔴","High":"🟠","Medium":"🟡","Low":"🟢"}
 conf_emoji = {"Confidential":"🔒","Sensitive":"🟠","Standard":""}
 
 display_df = filtered[show_cols].copy()
+
+# Add "Show in Finder" action column
+def create_finder_link(file_path):
+    """Create a clickable button to show file in Finder"""
+    if pd.isna(file_path):
+        return "—"
+    return f"[📁 Finder](?show_in_finder={file_path})"
+
+display_df.insert(1, "Finder", display_df["file_path"].apply(create_finder_link))
+
+# Convert file paths to file:// URLs for clickable links
+if "file_path" in display_df.columns:
+    display_df["file_path"] = display_df["file_path"].apply(
+        lambda x: f"file://{x}" if pd.notna(x) and not str(x).startswith("file://") else x
+    )
+
 display_df["review_priority"] = display_df["review_priority"].map(lambda x: f"{priority_emoji.get(x,'')} {x}")
 if "confidentiality" in display_df.columns:
     display_df["confidentiality"] = display_df["confidentiality"].map(
         lambda x: f"{conf_emoji.get(x,'')} {x}".strip()
     )
 
-st.dataframe(display_df, use_container_width=True, height=400)
+# Configure columns
+st.dataframe(
+    display_df, 
+    use_container_width=True, 
+    height=400,
+    column_config={
+        "file_path": st.column_config.LinkColumn(
+            "Open File",
+            help="Click to open file in default application",
+            display_text="📂 Open"
+        ),
+        "filename": st.column_config.TextColumn(
+            "File Name",
+            width="medium"
+        ),
+        "short_summary": st.column_config.TextColumn(
+            "Summary",
+            width="large"
+        ),
+        "Finder": st.column_config.TextColumn(
+            "Finder",
+            width="small",
+            help="Show in Finder"
+        )
+    }
+)
+
+st.divider()
+
+# Handle Finder action from URL parameter
+if "show_in_finder" in st.query_params:
+    file_path = st.query_params["show_in_finder"]
+    try:
+        # macOS: open -R opens file in Finder
+        subprocess.Popen(["open", "-R", file_path])
+        st.toast(f"📁 Opening {Path(file_path).name} in Finder...", icon="✅")
+    except Exception as e:
+        st.toast(f"Error: {e}", icon="❌")
 
 csv_bytes = filtered.to_csv(index=False).encode("utf-8")
 st.download_button(label="Download filtered CSV", data=csv_bytes,

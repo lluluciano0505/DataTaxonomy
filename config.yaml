@@ -32,7 +32,7 @@ paths:
 # ── Processing Settings ───────────────────────────────────────────────
 processing:
   # Number of files to sample (null = process all files)
-  sample_n: 20
+  sample_n: 400
   
   # LLM Model (from OpenRouter)
   model: "google/gemini-2.0-flash-001"
@@ -44,3 +44,16 @@ dashboard:
   
   # Auto-launch browser (true/false)
   auto_launch: true
+
+# ── Age & Temporal Analysis Settings ───────────────────────────────────
+age_analysis:
+  # Year extraction confidence threshold
+  # "high" = only filename years, "medium" = content + filename, "low" = includes file mtime
+  confidence_level: "medium"
+  
+  # Warn if file predates project start by more than N years
+  # Set to 0 to always warn about pre-project files, -1 to never warn
+  warn_predates_years: 10
+  
+  # Warn if file is N years after project end
+  warn_postproject_years: 3

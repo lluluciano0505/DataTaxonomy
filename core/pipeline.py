@@ -5,6 +5,7 @@ import random
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from openai import OpenAI
 
@@ -137,6 +138,20 @@ def process_file(file_path: Path, client: OpenAI, config: dict, input_path: Opti
     }
 
 
+# ── Parallel file processor wrapper ───────────────────────────────────────
+def process_file_safe(args: tuple) -> tuple:
+    """
+    Wrapper to process a file safely within a thread pool.
+    Returns (file_path, result_row, error, is_success)
+    """
+    fp, client, config = args
+    try:
+        row = process_file(fp, client, config)
+        return (fp, row, None, True)
+    except Exception as e:
+        return (fp, None, str(e), False)
+
+
 # ── Batch runner ──────────────────────────────────────────────────────────
 def run(
     input_path:  Path,
@@ -144,11 +159,13 @@ def run(
     config:      dict,
     sample_n:    Optional[int] = None,
     on_progress: Optional[callable] = None,
+    parallel:    int = 1,
 ) -> dict:
     """
     Processes all supported files under input_path and writes output_csv.
 
     on_progress(i, total, row) — optional callback for progress updates.
+    parallel — number of parallel workers (1 = serial, >1 = parallel)
     Used by the FastAPI/Celery layer to push status to the frontend.
 
     Returns a summary dict.
@@ -177,43 +194,77 @@ def run(
   Input:  {input_path}
   Scope:  {scope_label}
   Output: {output_csv}
+  Mode:   {'PARALLEL (' + str(parallel) + ' workers)' if parallel > 1 else 'SERIAL'}
 =================================================================
 """)
 
     # ── Process + write CSV ───────────────────────────────────────────────
     output_csv.parent.mkdir(parents=True, exist_ok=True)
     ok_count = error_count = llm_fail_count = 0
-    risk_counts = {"Urgent": 0, "High": 0, "Medium": 0, "Low": 0}
+    risk_counts = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0}
     start_time  = time.time()
 
     with open(output_csv, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=FIELDNAMES, extrasaction="ignore")
         writer.writeheader()
 
-        for i, fp in enumerate(files, 1):
-            elapsed  = time.time() - start_time
-            eta_secs = int((elapsed / i) * (len(files) - i)) if i > 1 else 0
-            eta_str  = f"{eta_secs//60}m{eta_secs%60:02d}s" if i > 1 else "--"
-            print(f"[{i:04d}/{len(files)}] {fp.name:<55} ETA {eta_str} ", end="", flush=True)
+        if parallel > 1:
+            # ── PARALLEL MODE ─────────────────────────────────────────────
+            with ThreadPoolExecutor(max_workers=parallel) as executor:
+                futures = [
+                    executor.submit(process_file_safe, (fp, client, config))
+                    for fp in files
+                ]
+                
+                for i, future in enumerate(as_completed(futures), 1):
+                    elapsed  = time.time() - start_time
+                    eta_secs = int((elapsed / i) * (len(files) - i)) if i > 1 else 0
+                    eta_str  = f"{eta_secs//60}m{eta_secs%60:02d}s" if i > 1 else "--"
+                    
+                    fp, row, error, is_success = future.result()
+                    print(f"[{i:04d}/{len(files)}] {fp.name:<55} ETA {eta_str} ", end="", flush=True)
+                    
+                    if is_success:
+                        writer.writerow(row)
+                        f.flush()
+                        priority = row["review_priority"]
+                        domain = row["domain"][:20]
+                        print(f"✓  {domain:<20} | {priority}")
+                        ok_count += 1
+                        risk_counts[priority] = risk_counts.get(priority, 0) + 1
+                        if row.get("llm_status"):
+                            llm_fail_count += 1
+                        if on_progress:
+                            on_progress(i, len(files), row)
+                    else:
+                        print(f"✗  ERROR: {error}")
+                        error_count += 1
+        else:
+            # ── SERIAL MODE ───────────────────────────────────────────────
+            for i, fp in enumerate(files, 1):
+                elapsed  = time.time() - start_time
+                eta_secs = int((elapsed / i) * (len(files) - i)) if i > 1 else 0
+                eta_str  = f"{eta_secs//60}m{eta_secs%60:02d}s" if i > 1 else "--"
+                print(f"[{i:04d}/{len(files)}] {fp.name:<55} ETA {eta_str} ", end="", flush=True)
 
-            try:
-                row = process_file(fp, client, config)
-                writer.writerow(row)
-                f.flush()
-                priority = row["review_priority"]
-                domain = row["domain"][:20]
-                print(f"✓  {domain:<20} | {priority}")
-                ok_count += 1
-                risk_counts[priority] = risk_counts.get(priority, 0) + 1
-                if row.get("llm_status"):
-                    llm_fail_count += 1
-                if on_progress:
-                    on_progress(i, len(files), row)
-            except Exception as e:
-                print(f"✗  ERROR: {e}")
-                error_count += 1
+                try:
+                    row = process_file(fp, client, config)
+                    writer.writerow(row)
+                    f.flush()
+                    priority = row["review_priority"]
+                    domain = row["domain"][:20]
+                    print(f"✓  {domain:<20} | {priority}")
+                    ok_count += 1
+                    risk_counts[priority] = risk_counts.get(priority, 0) + 1
+                    if row.get("llm_status"):
+                        llm_fail_count += 1
+                    if on_progress:
+                        on_progress(i, len(files), row)
+                except Exception as e:
+                    print(f"✗  ERROR: {e}")
+                    error_count += 1
 
-            time.sleep(config["delay"])
+                time.sleep(config["delay"])
 
     total_time = int(time.time() - start_time)
     summary = {
@@ -236,7 +287,7 @@ def run(
   Total processed : {ok_count}
   Errors          : {error_count}
   LLM failures    : {llm_fail_count}
-  Risk — Urgent   : {risk_counts.get("Urgent", 0)}
+  Risk — Critical : {risk_counts.get("Critical", 0)}
   Risk — High     : {risk_counts.get("High", 0)}
   Risk — Medium   : {risk_counts.get("Medium", 0)}
   Risk — Low      : {risk_counts.get("Low", 0)}

@@ -2,6 +2,50 @@ from datetime import datetime
 from pathlib import Path
 
 
+def _calculate_age_warning(file_year: int, project_start: int, project_end: int, current_year: int, min_valid_year: int = 2000) -> str:
+    """
+    Smart age warning based on project timeline and file age.
+    
+    Args:
+        file_year: Year extracted from file
+        project_start: Project start year
+        project_end: Project end year
+        current_year: Current year
+        min_valid_year: Minimum valid year (default 2000, files before this are likely errors)
+    
+    Returns:
+    - "" if no warning needed
+    - "NOTICE: ..." for informational warnings
+    - "WARNING: ..." for critical warnings
+    """
+    # Reject years before min_valid_year (likely extraction errors)
+    if file_year < min_valid_year or file_year > current_year:
+        return ""
+    
+    age_years = current_year - file_year
+    project_duration = project_end - project_start
+    
+    # Predates project start
+    if file_year < project_start:
+        years_before = project_start - file_year
+        if years_before > 10:
+            return f"WARNING: dated {file_year} — {years_before} years before project ({project_start}), verify relevance"
+        else:
+            return f"NOTICE: dated {file_year} — predates project start ({project_start})"
+    
+    # Within project duration: usually acceptable
+    if file_year <= project_end:
+        return ""  # No warning needed
+    
+    # After project end
+    years_after = file_year - project_end
+    if years_after > 3:
+        return f"NOTICE: dated {file_year} — {years_after} years after project end ({project_end})"
+    
+    # Within reasonable post-project period (as-built, lessons learned)
+    return ""
+
+
 # ── Public API ────────────────────────────────────────────────────────────
 def layer3_trust(
     file_path: Path,
@@ -22,24 +66,20 @@ def layer3_trust(
     llm_ok          = not str(layer2.get("llm", "ok")).startswith("error")
     coverage        = meta.get("extraction_coverage", "")
 
-    # ── Age warning ───────────────────────────────────────────────────────
+    # ── Age warning (improved) ────────────────────────────────────────────
     age_warning   = ""
     yr            = project.get("year_range", [])
-    project_start = yr[0] if yr else 1900
+    project_start = yr[0] if yr else 2000
+    project_end   = yr[1] if len(yr) > 1 else datetime.now().year
+    current_year  = datetime.now().year
 
     try:
         raw_year     = layer2.get("year") or meta.get("year")
-        # Strip Layer 1 mtime annotation (e.g. "2022 (mtime)") before parsing
+        # Strip Layer 1 source annotation before parsing (e.g. "2022 (mtime)" → "2022")
         raw_year_str = str(raw_year).split()[0] if raw_year else "0"
         y            = int(raw_year_str or 0)
-        current_year = datetime.now().year
-        if 1900 < y <= current_year:
-            age_years = current_year - y
-            if y < project_start:
-                age_warning = (f"WARNING: dated {y} — predates project start "
-                               f"({project_start}), verify relevance")
-            elif age_years > 5:
-                age_warning = f"NOTICE: {age_years} years old — verify currency"
+        
+        age_warning = _calculate_age_warning(y, project_start, project_end, current_year)
     except Exception:
         pass
 
@@ -54,13 +94,19 @@ def layer3_trust(
     if governance == "Unknown":           warnings.append("unknown source")
     if confidence == "Low":               warnings.append("low confidence")
     if domain == "Unknown":               warnings.append("unknown domain")
-    if "extraction failed" in coverage:   warnings.append("unreadable content")
+    
+    # Only flag extraction failures for formats that should be readable
+    # Don't penalize binary CAD formats (DWG, RVT, etc.)
+    if "extraction failed" in coverage:
+        file_ext = str(file_path.suffix).lower()
+        if file_ext not in {".dwg", ".rvt", ".nwd", ".rfa", ".rte"}:
+            warnings.append("unreadable content")
 
     review_reasons = critical + warnings
 
     # ── Review priority (determine if manual review is needed) ────────────
     if critical:
-        review_priority = "Urgent"
+        review_priority = "Critical"
     elif len(warnings) >= 2:
         review_priority = "High"
     elif warnings:

@@ -195,46 +195,102 @@ def _asset_type_hint(meta: dict) -> str | None:
 
 # ── Confidentiality hint ───────────────────────────────────────────────
 def _confidentiality_hint(meta: dict) -> str | None:
-    """Detect confidential/sensitive content: currency amounts, legal clauses,
-    signatures, percentages, revisions, draft watermarks."""
+    """
+    Detect confidential/sensitive content: currency amounts, legal clauses,
+    signatures, percentages, revisions, draft watermarks.
+    
+    NOTE: This is a PRE-COMPUTED STRUCTURAL HINT only. It helps LLM start,
+    but LLM must interpret context (technical drawing vs business doc).
+    """
     content = (meta.get("content_sample") or "")
     if not content:
         return None
 
     conf_score = 0
     sens_score = 0
+    is_drawing = "Technical" in meta.get("information_type", "")  # DWG, PDF drawing signals
 
     # ── Currency amounts ──────────────────────────────────────────────────
+    # Heavy weighting to distinguish "material cost in spec" vs "budget proposal"
     currency_hits = len(re.findall(
         r"[\$£€¥]\s?\d[\d,\.]*"                          # symbol-prefix
         r"|\b\d[\d,\.]+\s*(?:SAR|AED|QAR|USD|EUR|GBP)\b" # number-suffix code
         r"|\b(?:SAR|AED|QAR|USD|EUR|GBP)\s?\d[\d,\.]+",   # code-prefix
         content, re.IGNORECASE,
     ))
-    if   currency_hits >= 3:  conf_score += 3
-    elif currency_hits >= 2:  conf_score += 2
-    elif currency_hits >= 1:  conf_score += 1
+    
+    # Check context: is this in a "budget/cost plan/fee" context?
+    budget_keywords = len(re.findall(
+        r"\b(budget|cost plan|fee schedule|cost estimate|pricing|proposal|invoice|payment)\b",
+        content, re.IGNORECASE
+    ))
+    
+    # For drawings: currency is often material/component cost, not business fee
+    if currency_hits >= 3:
+        if budget_keywords >= 1:
+            conf_score += 3  # Budget/fee context → likely Confidential
+        elif is_drawing:
+            conf_score += 1  # Drawing with costs → weak signal only
+        else:
+            conf_score += 2  # Non-drawing document with money → moderate signal
+    elif currency_hits >= 2:
+        if budget_keywords >= 1:
+            conf_score += 2
+        elif is_drawing:
+            conf_score += 0  # Weak → ignore for drawings
+        else:
+            conf_score += 1
+    elif currency_hits >= 1:
+        if budget_keywords >= 1:
+            conf_score += 1
+        # Single currency mention in drawing → ignore
 
     # ── Legal clause numbering depth ──────────────────────────────────────
     # 3-level numbering (1.1.1) is the structural fingerprint of legal/contract
-    # documents — almost never appears in technical drawings or reports.
-    # Even a single instance is meaningful; multiple instances are conclusive.
+    # documents — almost never appears in technical drawings.
     deep_clauses = len(re.findall(r"^\s*\d+\.\d+\.\d+", content, re.MULTILINE))
     flat_clauses = len(re.findall(r"^\s*\d+\.\d+\s", content, re.MULTILINE))
     if   deep_clauses >= 2:   conf_score += 3   # very strong legal signal
-    elif deep_clauses >= 1:   conf_score += 2   # strong — rarely appears elsewhere
+    elif deep_clauses >= 1:   conf_score += 2   # strong — rarely appears in drawings
     elif flat_clauses >= 5:   conf_score += 2
     elif flat_clauses >= 2:   conf_score += 1
 
     # ── Signature / date fill blocks ──────────────────────────────────────
+    # Common on drawings (approval blocks) but more significant with legal context
     sig_blocks = len(re.findall(r"_{5,}|\.{8,}", content))
-    if   sig_blocks >= 3:     conf_score += 2
-    elif sig_blocks >= 1:     conf_score += 1
+    if   sig_blocks >= 3:
+        if budget_keywords >= 1:
+            conf_score += 2  # Signed budget → Confidential
+        elif is_drawing:
+            conf_score += 0  # Signed drawing = normal approval → don't penalize
+        else:
+            conf_score += 1
+    elif sig_blocks >= 1:
+        if budget_keywords >= 1:
+            conf_score += 1
+        # Drawing signature block → no penalty
 
-    # ── Percentage values (fee structures, cost plans) ────────────────────
+    # ── Percentage values (distinguish design spec vs cost %) ────────────────
+    # "8% slope" vs "8% markup on budget"
     pct_hits = len(re.findall(r"\d+(?:\.\d+)?\s*%", content))
-    if   pct_hits >= 5:       conf_score += 2
-    elif pct_hits >= 2:       conf_score += 1
+    
+    # Check context: is this a design specification or financial %?
+    design_keywords = len(re.findall(
+        r"\b(slope|grade|pitch|density|vegetation|coverage|green roof|permeability)\b",
+        content, re.IGNORECASE
+    ))
+    
+    if pct_hits >= 5:
+        if budget_keywords >= 1:
+            conf_score += 2  # Cost breakdown → Confidential
+        elif design_keywords >= 1:
+            conf_score += 0  # Design spec percentages → ignore
+        else:
+            conf_score += 1
+    elif pct_hits >= 2:
+        if budget_keywords >= 1:
+            conf_score += 1
+        # Design percentages → ignore
 
     # ── Revision markers in content body (internal WIP) ───────────────────
     rev_in_content = len(re.findall(r"\bRev(?:ision)?\s*[A-Z\d]|\bv\d+\b", content, re.IGNORECASE))
@@ -246,10 +302,18 @@ def _confidentiality_hint(meta: dict) -> str | None:
         sens_score += 2
 
     # ── Score → label ─────────────────────────────────────────────────────
-    if   conf_score >= 4:     return "Confidential"
-    elif conf_score >= 2:     return "Sensitive"
-    elif sens_score >= 2:     return "Sensitive"
-    return None
+    # For drawings: bias toward Standard unless strong Confidential signals
+    if is_drawing:
+        if   conf_score >= 5:     return "Confidential"  # Very strong business signal
+        elif conf_score >= 3:     return "Sensitive"      # Moderate signal
+        elif sens_score >= 2:     return "Sensitive"      # Draft/WIP drawing
+        else:                      return None             # Standard drawing (no hint)
+    else:
+        # For non-drawings: standard threshold
+        if   conf_score >= 4:     return "Confidential"
+        elif conf_score >= 2:     return "Sensitive"
+        elif sens_score >= 2:     return "Sensitive"
+        return None
 
 
 
@@ -533,17 +597,49 @@ Pick one:
                   regulatory documents, presentations for client/authority review
 
 CONFIDENTIALITY RULES (apply in order):
-  1. If CONFIDENTIALITY HINT above is 'Confidential' or 'Sensitive', use it.
-     Override only if the content sample is clearly a public technical document.
-  2. Content signals → Confidential:
-       Visible fee amounts, cost breakdowns, budget tables, contract clauses,
-       "confidential", "private", "proprietary", legal party names + signatures
-  3. Content signals → Sensitive:
-       "internal use only", "draft", "not for issue", "WIP", action items,
-       attendee lists, revision comments not yet resolved
-  4. Default to Standard for issued drawings, specs, public-facing reports.
-  5. Do NOT default everything to Standard — if the hint says Confidential,
-     trust it unless content proves otherwise.
+  ⚠️  IMPORTANT: The pre-computed CONFIDENTIALITY HINT is a STARTING POINT ONLY,
+      not a final classification. It flags structural signals (currency, signatures,
+      percentages) but is prone to FALSE POSITIVES on technical drawings.
+      YOU MUST JUDGE THE ACTUAL CONTENT AND CONTEXT.
+  
+  1. **READ THE CONTENT** — Do not rely solely on the hint. Ask:
+       • Is this a technical drawing (architectural, structural, landscape)?
+       • Does it have BUSINESS/LEGAL meaning (contracts, fees, budgets)?
+       • Is it marked as draft/WIP but otherwise a normal drawing?
+       • Are the currency/percentages part of the technical design (slopes, 
+         load percentages, material costs) vs. business fees/budgets?
+  
+  2. Technical drawings with numeric content → Standard (unless clearly business docs)
+       ✓ Floor plans with dimensions, drawing references, grade percentages
+       ✓ Landscape drawings with plant quantities, slope percentages
+       ✓ Site plans with cost estimates for materials/construction
+       ✓ Sections with structural notes, material specs, quantities
+       These are issued documents, meant for construction/client review.
+  
+  3. Content signals → Confidential (high confidence):
+       • Written contracts, legal clauses (numbered 1.1.1 format)
+       • Fee tables, pricing schedules, payment terms
+       • Explicit labels: "confidential", "proprietary", "private correspondence"
+       • Cost breakdowns / budgets in tabular form with funding sources
+       • Personnel files, financial statements
+  
+  4. Content signals → Sensitive (moderate signals):
+       • "draft", "WIP", "not for issue", "internal use only" (clear WIP markers)
+       • Meeting minutes with decisions, action items, attendee names
+       • Internal memos on coordination, approvals
+       • Preliminary studies explicitly not finalized
+  
+  5. Default to Standard for:
+       • Issued/finalized drawings (floor plans, sections, elevations)
+       • Design documents in project delivery phase (DD, CD, IFC)
+       • Technical specifications, reference standards
+       • Reports meant for external review / client / authority
+  
+  6. Key differentiator:
+       If it contains NUMBERS/PERCENTAGES/SIGNATURES but IS A TECHNICAL DRAWING
+       → Standard (unless clearly labeled Confidential or a contract).
+       Example: "Slope: 8% (Technical)" vs "Cost: 8% markup (Business)".
+       Use your AEC domain knowledge to distinguish.
 
 ─── ASSET_TYPE ───────────────────────────────────────────────────────────
 Pick one:

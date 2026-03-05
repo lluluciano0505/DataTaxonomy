@@ -33,6 +33,7 @@ def main():
     parser = argparse.ArgumentParser(description="DataTaxonomy Pipeline")
     parser.add_argument("--config", default="config.yaml", help="Path to config.yaml")
     parser.add_argument("--no-dashboard", action="store_true", help="Skip dashboard launch")
+    parser.add_argument("--parallel", type=int, default=1, help="Number of parallel workers (1=serial, >1=parallel)")
     args = parser.parse_args()
     
     # ── Load configuration ────────────────────────────────────────────────
@@ -65,7 +66,7 @@ def main():
     print(f"📊 Files to process: {processing.get('sample_n') or 'all'}")
     print("="*70 + "\n")
     
-    if not process_data(paths, project, processing, API_KEY):
+    if not process_data(paths, project, processing, API_KEY, args.parallel):
         print("⚠️ Data processing failed. Skipping dashboard.")
         sys.exit(1)
     
@@ -77,7 +78,7 @@ def main():
             print("\n\n👋 Dashboard closed.")
 
 
-def process_data(paths: dict, project: dict, processing: dict, api_key: str) -> bool:
+def process_data(paths: dict, project: dict, processing: dict, api_key: str, parallel: int = 1) -> bool:
     """Run the pipeline and generate CSV."""
     from core.pipeline import build_config, run
     
@@ -92,6 +93,7 @@ def process_data(paths: dict, project: dict, processing: dict, api_key: str) -> 
             output_csv=paths["output_csv"],
             config=config,
             sample_n=processing.get("sample_n"),
+            parallel=parallel,
         )
         print(f"\n✅ Success! Results saved to: {paths['output_csv']}")
         print(f"📝 Summary: {summary}\n")

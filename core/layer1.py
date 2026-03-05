@@ -55,41 +55,86 @@ _SIZE_CATEGORIES = [
 ]
 
 
-# ── Year extraction ───────────────────────────────────────────────────────
-def _find_years_in_text(text: str) -> list[str]:
-    current = datetime.now().year
-    hits    = re.findall(r"\b(20\d{2}|19\d{2})\b", text)
-    return [h for h in hits if int(h) <= current]
+# ── Year extraction (improved) ────────────────────────────────────────────
+def _find_years_in_text(text: str, min_year: int = 2000, max_year: Optional[int] = None) -> list[str]:
+    """
+    Find valid years in text.
+    By default only accepts years >= 2000 (excludes historical dates like 1915, 1950, etc)
+    
+    Args:
+        text: Text to search
+        min_year: Minimum acceptable year (default 2000)
+        max_year: Maximum acceptable year (default current year)
+    """
+    if max_year is None:
+        max_year = datetime.now().year
+    
+    # Match 4-digit numbers that look like years
+    hits = re.findall(r"\b(20\d{2}|19\d{2})\b", text)
+    
+    # Filter by range
+    valid_years = []
+    for h in hits:
+        y = int(h)
+        if min_year <= y <= max_year:
+            valid_years.append(h)
+    
+    return valid_years
 
 
-def _extract_year(filename: str, content: str = "", file_path: Optional[Path] = None) -> Optional[str]:
-    """Year priority: filename → content frequency → file mtime."""
-    filename_years = _find_years_in_text(filename)
+def _extract_year_with_confidence(filename: str, content: str = "", file_path: Optional[Path] = None, 
+                                 min_year: int = 2000) -> tuple[Optional[str], str]:
+    """
+    Enhanced year extraction with confidence level.
+    Returns: (year_str, source_confidence)
+    
+    source_confidence: "high" (filename), "medium" (content), "low" (mtime)
+    min_year: Only accept years >= min_year (default 2000 to avoid historical dates)
+    """
+    current_year = datetime.now().year
+    
+    # Priority 1: Filename years (most explicit)
+    filename_years = _find_years_in_text(filename, min_year=min_year, max_year=current_year)
     if filename_years:
-        return max(filename_years, key=int)
-
+        year = max(filename_years, key=int)
+        return year, "high"
+    
+    # Priority 2: Content year frequency (document metadata/revision)
     if content:
+        # Remove false positives (drawing codes, copyright notices, version strings)
         cleaned = re.sub(r"\b[A-Z]{1,5}[\s\-]\d{3,6}[-:]\d{2,4}\b", "", content)
         cleaned = re.sub(r"©\s*\d{4}", "", cleaned)
-        content_years = _find_years_in_text(cleaned)
+        cleaned = re.sub(r"v\d+\.\d+\s*\(\d{4}\)", "", cleaned)
+        
+        content_years = _find_years_in_text(cleaned, min_year=min_year, max_year=current_year)
         if content_years:
             freq       = Counter(content_years)
             max_freq   = max(freq.values())
             candidates = [y for y, c in freq.items() if c == max_freq]
-            return max(candidates, key=int)
-
-    # NEW ── fallback: OS modification date
+            year = max(candidates, key=int)
+            # If appears 3+ times, high confidence
+            confidence = "high" if max_freq >= 3 else "medium"
+            return year, confidence
+    
+    # Priority 3: File modification time (least explicit)
     if file_path:
         try:
             mtime = file_path.stat().st_mtime
             mtime_year = str(datetime.fromtimestamp(mtime).year)
-            current = datetime.now().year
-            if 2000 <= int(mtime_year) <= current:
-                return mtime_year + " (mtime)"
+            mtime_year_int = int(mtime_year)
+            # Validate mtime is within acceptable range
+            if min_year <= mtime_year_int <= current_year:
+                return mtime_year, "low"
         except Exception:
             pass
+    
+    return None, "unknown"
 
-    return None
+
+def _extract_year(filename: str, content: str = "", file_path: Optional[Path] = None) -> Optional[str]:
+    """Backward compatible wrapper. Returns year string."""
+    year, _ = _extract_year_with_confidence(filename, content, file_path)
+    return year
 
 
 # ── Coverage helpers ──────────────────────────────────────────────────────
@@ -284,37 +329,103 @@ def _extract_content(file_path: Path) -> tuple[str, Optional[int], str]:
         return content, None, coverage
 
     elif ext == ".dwg":
-        # NEW ── Try to read ASCII header bytes (DWG starts with "AC" version string)
+        # Enhanced DWG extraction: parse filename for drawing metadata
+        metadata_parts = []
+        
+        # Try to extract drawing code patterns (e.g., A-001, SK-024, FLB-HL-DD-A-D-001)
+        drawing_code = re.search(r"[A-Z]{1,5}[\-\._ ]\d{3,5}", file_path.stem)
+        if drawing_code:
+            metadata_parts.append(f"Drawing: {drawing_code.group()}")
+        
+        # Extract discipline codes (A=Arch, S=Struct, M=Mech, E=Elec, L=Landscape, C=Civil)
+        discipline_match = re.search(r"[\-\._ ]([ASMELCP])[\-\._ ]", file_path.stem)
+        if discipline_match:
+            disciplines = {"A": "Architecture", "S": "Structural", "M": "Mechanical", 
+                          "E": "Electrical", "L": "Landscape", "C": "Civil", "P": "Plumbing"}
+            disc = disciplines.get(discipline_match.group(1), discipline_match.group(1))
+            metadata_parts.append(f"Discipline: {disc}")
+        
+        # Extract phase codes (SK=Sketch, DD=Design Dev, CD=Construction Docs)
+        phase_match = re.search(r"\b(SK|DD|CD|SD|CA|AB)\b", file_path.stem, re.IGNORECASE)
+        if phase_match:
+            phases = {"SK": "Sketch", "SD": "Schematic Design", "DD": "Design Development",
+                     "CD": "Construction Docs", "CA": "Construction Admin", "AB": "As-Built"}
+            phase = phases.get(phase_match.group(1).upper(), phase_match.group(1))
+            metadata_parts.append(f"Phase: {phase}")
+        
+        # Try to read DWG version from binary header
         try:
             raw_bytes = file_path.read_bytes()[:200]
             header    = raw_bytes[:6].decode("ascii", errors="replace")
-            # DWG version map
             _DWG_VER = {
                 "AC1032": "AutoCAD 2018–2021", "AC1027": "AutoCAD 2013–2017",
                 "AC1024": "AutoCAD 2010–2012", "AC1021": "AutoCAD 2007–2009",
                 "AC1018": "AutoCAD 2004–2006", "AC1015": "AutoCAD 2000–2002",
             }
             ver_label = _DWG_VER.get(header.strip(), header.strip())
-            content   = f"[DWG binary — version: {ver_label} — filename and folder path signals only]"
-            coverage  = "binary header only"
+            metadata_parts.append(f"Version: {ver_label}")
         except Exception:
-            content  = "[DWG binary — filename and folder path signals only]"
-            coverage = "binary, no extraction"
+            pass
+        
+        if metadata_parts:
+            content = f"[DWG: {' | '.join(metadata_parts)}]"
+            coverage = "filename metadata extracted"
+        else:
+            content = "[DWG binary — analyze filename and folder path]"
+            coverage = "filename signals only"
+        
         return content, None, coverage
 
     elif ext == ".dxf":
+        # Enhanced DXF extraction: parse layers + filename metadata
+        metadata_parts = []
+        
+        # Extract drawing metadata from filename (same as DWG)
+        drawing_code = re.search(r"[A-Z]{1,5}[\-\._ ]\d{3,5}", file_path.stem)
+        if drawing_code:
+            metadata_parts.append(f"Drawing: {drawing_code.group()}")
+        
         try:
             raw       = file_path.read_text(encoding="utf-8", errors="replace")[:1200]
             layers    = re.findall(r"(?<=\n  2\n)[A-Z0-9_\-]+(?=\n)", raw)
             layer_str = ", ".join(dict.fromkeys(layers[:20]))
-            content   = (f"[DXF layers: {layer_str}]\n{raw[:400]}" if layer_str else raw[:400])
-            coverage  = f"{len(layers)} layer names extracted"
+            
+            if layer_str:
+                metadata_parts.append(f"Layers: {layer_str}")
+            
+            if metadata_parts:
+                content = f"[DXF: {' | '.join(metadata_parts)}]"
+                coverage = f"{len(layers)} layer names extracted"
+            else:
+                content = raw[:400]
+                coverage = "partial text extraction"
         except Exception as e:
-            content, coverage = f"[DXF error: {e}]", "extraction failed"
+            content, coverage = f"[DXF: {' | '.join(metadata_parts) if metadata_parts else 'analyze filename'}]", "filename signals only"
         return content, None, coverage
 
     elif ext == ".rvt":
-        return "[Revit binary — filename and folder path signals only]", None, "binary, no extraction"
+        # Extract metadata from Revit filename
+        metadata_parts = []
+        
+        # Revit files often have project/discipline in name
+        if re.search(r"_Arch|_Struct|_MEP|_Elec|_Plumb", file_path.stem, re.IGNORECASE):
+            disc_match = re.search(r"_(Arch|Struct|MEP|Elec|Plumb)", file_path.stem, re.IGNORECASE)
+            if disc_match:
+                metadata_parts.append(f"Discipline: {disc_match.group(1)}")
+        
+        # Extract phase or version
+        phase_match = re.search(r"\b(Central|Local|Detached|Backup)\b", file_path.stem, re.IGNORECASE)
+        if phase_match:
+            metadata_parts.append(f"Type: {phase_match.group(1)}")
+        
+        if metadata_parts:
+            content = f"[Revit: {' | '.join(metadata_parts)}]"
+            coverage = "filename metadata extracted"
+        else:
+            content = "[Revit binary — analyze filename and folder path]"
+            coverage = "filename signals only"
+        
+        return content, None, coverage
 
     elif ext == ".ifc":
         # NEW ── Structured IFC header + entity type frequency
