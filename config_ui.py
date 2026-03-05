@@ -45,16 +45,21 @@ def save_config(config: dict):
     st.cache_data.clear()
 
 # ── Display banner ─────────────────────────────────────────────────────────
-if PIC_PATH.exists():
-    col1, col2 = st.columns([1, 2])
-    with col1:
-        st.image(str(PIC_PATH), use_container_width=True)
-    with col2:
-        st.title("🏙️ DataTaxonomy")
-        st.subheader("Configuration Manager")
-        st.caption(f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-else:
+try:
+    if PIC_PATH.exists():
+        col1, col2 = st.columns([1, 2])
+        with col1:
+            st.image(str(PIC_PATH), use_container_width=True)
+        with col2:
+            st.title("🏙️ DataTaxonomy")
+            st.subheader("Configuration Manager")
+            st.caption(f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    else:
+        st.title("⚙️ DataTaxonomy Configuration Manager")
+        st.caption("🚀 **Cloud Demo Version** - Configure your data taxonomy pipeline")
+except Exception:
     st.title("⚙️ DataTaxonomy Configuration Manager")
+    st.caption("🚀 **Cloud Demo Version** - Configure your data taxonomy pipeline")
 
 st.divider()
 

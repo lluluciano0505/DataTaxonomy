@@ -25,6 +25,41 @@ Output is a CSV where every file gets 20+ structured fields, ready for filtering
 
 ---
 
+## 🚀 Quick Start & Deployment
+
+### Option 1: View Online Demo
+**[▶️ Live Demo on Streamlit Cloud](https://datataxonomy.streamlit.app/)**
+
+The interactive dashboard with sample data — no installation needed!
+
+### Option 2: Local Installation
+
+1. **Clone and install:**
+   ```bash
+   git clone https://github.com/lluluciano0505/DataTaxonomy.git
+   cd DataTaxonomy
+   pip install -r requirements.txt
+   ```
+
+2. **Run web interface:**
+   ```bash
+   streamlit run config_ui.py    # Configuration UI
+   streamlit run dashboard.py    # Results dashboard
+   ```
+
+### Option 3: Deploy Your Own Copy
+
+1. **Fork this repository** on GitHub
+2. **Go to [share.streamlit.io](https://share.streamlit.io/)**  
+3. **Connect your GitHub account**
+4. **Select your forked repo**
+5. **Main file path:** `dashboard.py` (for dashboard) or `config_ui.py` (for config)
+6. **Click Deploy!**
+
+The app works in demo mode without any API keys. For full functionality with your own files, add your API keys in Streamlit Cloud settings.
+
+---
+
 ## Example Output
 
 | filename | domain | scale | lifecycle | review_priority | confidentiality |

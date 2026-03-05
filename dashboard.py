@@ -32,16 +32,86 @@ st.markdown("""
 
 CSV_PATH = Path("test_output.csv")
 
+# Sample data for demo purposes when CSV is not available
+SAMPLE_DATA = [
+    {
+        "filename": "Project_Brief_2024.pdf",
+        "format": "PDF", 
+        "file_path": "/sample/project/Project_Brief_2024.pdf",
+        "size_kb": 245,
+        "domain": "Architecture & Buildings",
+        "scale": "Building / Complex", 
+        "lifecycle": "Concept Design",
+        "asset_type": "Document",
+        "confidentiality": "Standard",
+        "review_priority": "High",
+        "year": 2024,
+        "short_summary": "Architectural project brief outlining design requirements and constraints."
+    },
+    {
+        "filename": "Site_Analysis.dwg", 
+        "format": "DWG",
+        "file_path": "/sample/project/Site_Analysis.dwg", 
+        "size_kb": 1250,
+        "domain": "Urban Planning & Massing",
+        "scale": "City / Municipal",
+        "lifecycle": "Schematic Design", 
+        "asset_type": "Data",
+        "confidentiality": "Standard", 
+        "review_priority": "Medium",
+        "year": 2024,
+        "short_summary": "CAD drawing showing site analysis and urban context."
+    },
+    {
+        "filename": "Budget_Estimates.xlsx",
+        "format": "XLSX", 
+        "file_path": "/sample/project/Budget_Estimates.xlsx",
+        "size_kb": 89,
+        "domain": "Project Management", 
+        "scale": "Non-spatial",
+        "lifecycle": "Design Development",
+        "asset_type": "Data", 
+        "confidentiality": "Confidential",
+        "review_priority": "Critical", 
+        "year": 2024,
+        "short_summary": "Project budget estimates and cost breakdown."
+    },
+    {
+        "filename": "Environmental_Impact.pdf",
+        "format": "PDF",
+        "file_path": "/sample/project/Environmental_Impact.pdf", 
+        "size_kb": 567,
+        "domain": "Environment & Climate",
+        "scale": "City / Municipal",
+        "lifecycle": "Design Development",
+        "asset_type": "Document", 
+        "confidentiality": "Standard",
+        "review_priority": "High",
+        "year": 2023,
+        "short_summary": "Environmental impact assessment for the development project."
+    }
+]
+
 @st.cache_data
 def load_data(path):
-    df = pd.read_csv(path)
-    df["year"] = pd.to_numeric(df["year"], errors="coerce")
-    return df
+    try:
+        if path.exists():
+            df = pd.read_csv(path)
+            df["year"] = pd.to_numeric(df["year"], errors="coerce")
+            return df
+        else:
+            # Use sample data for demo
+            st.info("📊 **Demo Mode**: Displaying sample data. Upload your own CSV file or run the pipeline locally to see real project data.")
+            df = pd.DataFrame(SAMPLE_DATA)
+            df["year"] = pd.to_numeric(df["year"], errors="coerce")
+            return df
+    except Exception as e:
+        st.warning(f"Could not load CSV file: {e}. Using sample data instead.")
+        df = pd.DataFrame(SAMPLE_DATA)
+        df["year"] = pd.to_numeric(df["year"], errors="coerce")
+        return df
 
-if not CSV_PATH.exists():
-    st.error(f"Could not find {CSV_PATH}. Run python main.py first.")
-    st.stop()
-
+# Load data (real or sample)
 df = load_data(CSV_PATH)
 
 st.title("Urban Asset Classifier — Project Dashboard")
