@@ -15,38 +15,27 @@ cp .env.example .env
 
 ### 2️⃣ 编辑配置
 
-打开 `config.yaml`，修改：
+打开网页配置器：
+
+```bash
+streamlit run config_ui.py --server.port 8502
+```
+
+访问 http://localhost:8502，在网页中修改：
 - `project.name` — 项目名称
 - `paths.input_dir` — 文件夹路径
 - `processing.sample_n` — 处理的文件数量
 
 ### 3️⃣ 运行程序
 
-**选项 A：命令行（推荐）**
-```bash
-python main.py
-```
+在配置网页中点击 `▶️ START PROCESSING` 即可开始处理。
 
-**选项 B：图形界面**
-```bash
-python app.py
-```
+处理完成后：
+- 可在同页下载 CSV
+- 按提示启动 Dashboard 查看结果
 
-**选项 C：Bash 脚本**
-```bash
-chmod +x startup.sh
-./startup.sh
-```
-
-**选项 D：只处理数据**
-```bash
-python main.py --no-dashboard
-```
-
-**选项 E：只启动 Dashboard**
-```bash
-streamlit run dashboard.py
-```
+> 仅保留网页操作流（推荐）。
+> 其他启动方式（CLI / GUI / 脚本）统一放在：[RUN_METHODS.md](RUN_METHODS.md)
 
 ---
 
@@ -54,8 +43,9 @@ streamlit run dashboard.py
 
 | 文件 | 用途 |
 |------|------|
-| `main.py` | 命令行入口（推荐） |
-| `app.py` | GUI 桌面应用（可选） |
+| `config_ui.py` | Web 配置与运行入口（推荐） |
+| `main.py` | 命令行入口（进阶） |
+| `app.py` | GUI 桌面应用（进阶） |
 | `dashboard.py` | Streamlit 仪表板 |
 | `config.yaml` | 配置文件（无需改代码） |
 | `config_loader.py` | 配置加载器 |
@@ -69,54 +59,31 @@ streamlit run dashboard.py
 
 ### 用例 1：快速测试（20 个文件）
 
-编辑 `config.yaml`：
-```yaml
-processing:
-  sample_n: 20
-```
-
-运行：
-```bash
-python main.py
-```
+在配置网页中：
+- `Processing` → `Files to Process` 设为 `20`
+- 点击 `💾 Save Processing Settings`
+- 点击 `▶️ START PROCESSING`
 
 ### 用例 2：完整处理（所有文件）
 
-编辑 `config.yaml`：
-```yaml
-processing:
-  sample_n: null
-```
-
-运行：
-```bash
-python main.py
-```
+在配置网页中：
+- `Processing` → 勾选 `Process ALL files`
+- 点击 `💾 Save Processing Settings`
+- 点击 `▶️ START PROCESSING`
 
 ### 用例 3：处理多个项目
 
-创建多个配置文件：
-```bash
-cp config.yaml project1.yaml
-cp config.yaml project2.yaml
-```
-
-编辑各自的配置，然后运行：
-```bash
-python main.py --config project1.yaml
-python main.py --config project2.yaml
-```
+推荐做法：
+- 每个项目维护一个独立目录 + 独立 `config.yaml`
+- 分别打开网页配置器并执行处理
+- 避免在同一目录反复覆盖配置
 
 ### 用例 4：使用不同的 LLM
 
-```bash
-# 使用环境变量
-MODEL=anthropic/claude-opus python main.py
-
-# 或编辑 config.yaml
-processing:
-  model: "anthropic/claude-opus"
-```
+在配置网页中：
+- `Processing` → `LLM Model` 选择目标模型
+- 点击 `💾 Save Processing Settings`
+- 点击 `▶️ START PROCESSING`
 
 ---
 
@@ -162,24 +129,17 @@ dashboard:
 ## ⚡ 快捷命令
 
 ```bash
-# 查看帮助
-python main.py --help
+# 启动网页配置器（推荐入口）
+streamlit run config_ui.py --server.port 8502
 
-# 使用自定义配置
-python main.py --config myconfig.yaml
-
-# 跳过 Dashboard
-python main.py --no-dashboard
-
-# 只启动 Dashboard
-streamlit run dashboard.py
-
-# GUI 应用
-python app.py
+# 启动 Dashboard（查看结果）
+streamlit run dashboard.py --server.port 8501
 
 # 安装开发依赖
 pip install -e ".[dev]"
 ```
+
+更多运行方式见：[RUN_METHODS.md](RUN_METHODS.md)
 
 ---
 
@@ -203,13 +163,13 @@ pip install -e ".[dev]"
 ## 📝 工作流
 
 ```
-1. 编辑 config.yaml
+1. 打开 config_ui 网页
    ↓
-2. python main.py
-   ├─ 处理文件 → 生成 CSV
-   └─ 启动 Dashboard
+2. 保存配置并点击 START PROCESSING
+  ├─ 处理文件 → 生成 CSV
+  └─ 页面中可下载结果
    ↓
-3. 在 Dashboard 中查看结果
+3. 启动 Dashboard 查看结果
    ├─ 过滤和分析
    ├─ 导出数据
    └─ 生成报告
@@ -220,14 +180,14 @@ pip install -e ".[dev]"
 ## 🎯 典型流程
 
 ```bash
-# 步骤 1：配置项目
-nano config.yaml
+# 步骤 1：打开网页配置器
+streamlit run config_ui.py --server.port 8502
 
-# 步骤 2：运行处理
-python main.py
+# 步骤 2：在网页中保存配置并开始处理
+# （点击 ▶️ START PROCESSING）
 
 # 步骤 3：查看结果
-# （自动打开 http://localhost:8501）
+streamlit run dashboard.py --server.port 8501
 
 # 步骤 4：导出数据
 # 在 Dashboard 中下载 CSV

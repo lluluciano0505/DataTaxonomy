@@ -55,7 +55,7 @@ OPENROUTER_API_KEY=your-key-here
 
 ### 3. Configure your project
 
-**Option A: Web UI (推荐)**
+**Web UI (推荐，主流程)**
 ```bash
 streamlit run config_ui.py
 ```
@@ -65,26 +65,12 @@ streamlit run config_ui.py
 - ⚡ 处理设置（文件数、LLM 模型、并行工作进程）
 - 🎨 仪表板和分析选项
 
-**Option B: 直接编辑** `config.yaml`
-```yaml
-project:
-  name: "Your Project Name"
-  location: "City, Country"
-  year_range: [2020, 2026]
-  lead_firm: "Your Firm"
-```
+> 说明：文档默认仅保留网页操作流。
+> 其他启动方式（CLI / GUI / 脚本）见 [RUN_METHODS.md](RUN_METHODS.md)
 
 ### 4. Run the classifier
 
-**Serial processing:**
-```bash
-python main.py
-```
-
-**Parallel processing (4–8× faster):**
-```bash
-python main.py --parallel 8    # Use 8 workers
-```
+在 `config_ui.py` 页面中点击 `▶️ START PROCESSING`。
 
 Outputs `results.csv` in the project root.
 
