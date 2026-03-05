@@ -6,6 +6,8 @@ pandas
 pillow
 python-dotenv
 pyyaml
+streamlit
+plotly
 fastapi
 uvicorn
 celery

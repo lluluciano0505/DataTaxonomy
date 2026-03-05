@@ -271,6 +271,17 @@ age_analysis:
 
 ---
 
+## Deploy (Streamlit Community Cloud)
+
+1) Push this repo to GitHub.
+2) Go to https://streamlit.io/cloud and create a new app.
+3) Select this repo and set the app file to `config_ui.py` (or `dashboard.py` for the dashboard-only view).
+4) (Optional) Add secrets in the Streamlit Cloud UI if you need `OPENROUTER_API_KEY`.
+
+Notes:
+- Streamlit Cloud uses `requirements.txt` automatically.
+- Default port is handled by Streamlit Cloud; no manual port configuration needed.
+
 ## License
 
 MIT — see LICENSE file for details.
