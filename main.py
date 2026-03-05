@@ -111,3 +111,10 @@ def launch_dashboard(dashboard_cfg: dict) -> None:
     
     sys.argv = ["streamlit", "run", "dashboard.py", "--logger.level=error"]
     stcli.main()
+
+
+if __name__ == "__main__":
+    main()
+    
+    sys.argv = ["streamlit", "run", "dashboard.py", "--logger.level=error"]
+    stcli.main()

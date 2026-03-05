@@ -183,7 +183,7 @@ def run(
     # ── Process + write CSV ───────────────────────────────────────────────
     output_csv.parent.mkdir(parents=True, exist_ok=True)
     ok_count = error_count = llm_fail_count = 0
-    risk_counts = {"High": 0, "Medium": 0, "Low": 0}
+    risk_counts = {"Urgent": 0, "High": 0, "Medium": 0, "Low": 0}
     start_time  = time.time()
 
     with open(output_csv, "w", newline="", encoding="utf-8") as f:
@@ -236,6 +236,7 @@ def run(
   Total processed : {ok_count}
   Errors          : {error_count}
   LLM failures    : {llm_fail_count}
+  Risk — Urgent   : {risk_counts.get("Urgent", 0)}
   Risk — High     : {risk_counts.get("High", 0)}
   Risk — Medium   : {risk_counts.get("Medium", 0)}
   Risk — Low      : {risk_counts.get("Low", 0)}
