@@ -1,6 +1,13 @@
 # 🏙️ DataTaxonomy — Urban Asset Classifier
 
-An automated file classification pipeline for large-scale urban design and architecture projects. Instead of manually sorting thousands of files, this tool attaches structured metadata to every file — domain, scale, lifecycle, risk level, and more — then visualizes the results in an interactive dashboard.
+An automated file classification pipeline for large-scale urban design and architecture projects. Instead of manually sorting thousands of files, this tool attaches structured metadata to every file — domain, scale, lifecycle, confidentiality, risk level, and more — then visualizes the results in an interactive dashboard.
+
+**Latest improvements:**
+- 🚀 **Parallel processing** — process 400+ files 4–8× faster
+- 🎨 **Enhanced CAD extraction** — intelligently parse DWG/Revit file names (discipline, phase, drawing code)
+- 🧠 **Smart confidentiality detection** — LLM judges semantic context, not just keyword matching (avoids false positives on technical drawings)
+- 📅 **Smart year detection** — validates years to prevent misclassification (2000+ only by default)
+- 📂 **Interactive file explorer** — click to open files directly from dashboard
 
 ---
 
@@ -10,20 +17,21 @@ The pipeline runs in three layers:
 
 | Layer | File | What it does |
 |-------|------|--------------|
-| **Layer 1** | `layer1.py` | Rule-based: extracts file metadata, content sample, year, data hint |
-| **Layer 2** | `layer2.py` | LLM-based: classifies domain, scale, lifecycle, asset type, governance |
-| **Layer 3** | `layer3.py` | Rule-based: risk assessment, flags files needing manual review |
+| **Layer 1** | `core/layer1.py` | Rule-based: extracts file metadata, content sample, year, data hints, CAD metadata |
+| **Layer 2** | `core/layer2.py` | LLM-based: classifies domain, scale, lifecycle, asset type, governance, confidentiality |
+| **Layer 3** | `core/layer3.py` | Rule-based: risk assessment, age analysis, flags files needing manual review |
 
-Output is a CSV where every file gets 20 structured fields, ready for filtering or analysis.
+Output is a CSV where every file gets 20+ structured fields, ready for filtering or analysis.
 
 ---
 
 ## Example Output
 
-| filename | domain | scale | lifecycle | risk_level | governance |
-|----------|--------|-------|-----------|------------|------------|
-| Traffic_Report_2024.xlsx | Mobility & Transport | Neighborhood / District | As-Built / Completed | Low | Official |
-| KSP-HL-DD-A-DWG-0042.dwg | Architecture & Buildings | Object / Parcel | Design Development | Medium | Internal |
+| filename | domain | scale | lifecycle | review_priority | confidentiality |
+|----------|--------|-------|-----------|-----------------|-----------------|
+| Budget_2024.pdf | Project Management | Non-spatial | As-Built / Completed | Critical | Confidential |
+| KSP-HL-DD-A-DWG-0042.dwg | Architecture & Buildings | Object / Parcel | Design Development | Low | Standard |
+| Slope_Analysis_30pct.pdf | Landscape & Public Realm | Neighborhood / District | Design Development | Low | Standard |
 
 ---
 
@@ -43,32 +51,50 @@ cp .env.example .env
 Edit `.env` and add your [OpenRouter](https://openrouter.ai) API key:
 ```
 OPENROUTER_API_KEY=your-key-here
-MODEL=google/gemini-2.0-flash-001
 ```
 
 ### 3. Configure your project
-Edit `test_run.py` — update `PROJECT` and `INPUT_PATH` to match your project:
-```python
-PROJECT = {
-    "name":       "Your Project Name",
-    "location":   "City, Country",
-    "year_range": [2020, 2025],
-    "lead_firm":  "Your Firm",
-    ...
-}
-INPUT_PATH = Path.home() / "Desktop" / "YourProjectFolder"
+Edit `config.yaml`:
+```yaml
+project:
+  name: "Your Project Name"
+  location: "City, Country"
+  year_range: [2020, 2026]
+  lead_firm: "Your Firm"
+
+paths:
+  input_dir: "~/Desktop/YourProjectFolder"
+  output_csv: "results.csv"
+
+processing:
+  sample_n: 400          # Process 400 files (null = all)
+  model: "google/gemini-2.0-flash-001"
 ```
 
 ### 4. Run the classifier
+
+**Serial processing:**
 ```bash
-python test_run.py
+python main.py
 ```
-Outputs `test_output.csv` in the project root.
+
+**Parallel processing (4–8× faster):**
+```bash
+python main.py --parallel 8    # Use 8 workers
+```
+
+Outputs `results.csv` in the project root.
 
 ### 5. Launch the dashboard
 ```bash
 streamlit run dashboard.py
 ```
+Outputs appear at **http://localhost:8502** with:
+- 📊 Overview stats (total files, critical reviews, data assets)
+- 🗺️ Domain × Scale heatmap
+- 📈 Timeline view (files per year by lifecycle)
+- 🔒 Confidentiality breakdown
+- 📁 **Interactive file explorer** — select, click to open in Finder or default app
 
 ---
 
@@ -78,67 +104,187 @@ streamlit run dashboard.py
 DataTaxonomy/
 ├── core/
 │   ├── __init__.py
-│   ├── layer1.py        # Metadata extraction
-│   ├── layer2.py        # LLM classification
-│   ├── layer3.py        # Risk assessment
-│   └── pipeline.py      # Batch runner + CSV output
-├── .env                 # API key (local only, not uploaded)
-├── .env.example         # Key template
-├── .gitignore
+│   ├── layer1.py              # Metadata extraction, CAD parsing
+│   ├── layer2.py              # LLM classification
+│   ├── layer3.py              # Risk & age analysis
+│   └── pipeline.py            # Batch runner, parallel support
+├── config.yaml                # Project config (no code edits needed)
+├── config_loader.py           # Config parser
+├── main.py                    # Entry point
+├── dashboard.py               # Streamlit dashboard
 ├── requirements.txt
-├── test_run.py          # Entry point
-└── dashboard.py         # Streamlit dashboard
+├── .env.example
+└── README.md
 ```
 
 ---
 
 ## Supported File Formats
 
-`.pdf` `.docx` `.pptx` `.xlsx` `.csv` `.json` `.txt`
-`.dwg` `.dxf` `.ifc` `.rvt`
-`.jpg` `.png` `.tiff`
-`.shp` `.geojson` `.kml`
-`.eml` `.msg` `.zip`
+**Documents:**
+`.pdf` `.docx` `.doc` `.txt` `.pptx`
 
+**Data:**
+`.xlsx` `.xls` `.csv` `.json`
+
+**CAD & Technical:**
+`.dwg` `.dxf` `.ifc` `.rvt` `.nwd`
+
+**Spatial:**
+`.shp` `.geojson` `.kml` `.gpkg`
+
+**Media:**
+`.jpg` `.jpeg` `.png` `.tiff` `.mp4` `.mov`
+
+**Other:**
+`.eml` `.msg` `.zip` `.7z` `.rar`
 ---
 
 ## Classification Fields
 
-| Field | Options |
-|-------|---------|
-| **Domain** | Architecture & Buildings, Landscape & Public Realm, Urban Planning & Massing, Mobility & Transport, Environment & Climate, Social & Demographics, Utilities & Infrastructure, Administrative & Legal, Project Management, Reference & Research |
-| **Scale** | Object / Parcel, Neighborhood / District, City / Municipal, Regional / National, Non-spatial |
-| **Lifecycle** | Brief / Concept, Schematic Design, Design Development, Construction Documents, As-Built / Completed, Reference / Archive |
-| **Asset Type** | Data, Document, Drawing, Media, Archive |
-| **Governance** | Official, Internal, External, Unknown |
-| **Confidentiality** | Confidential, Sensitive, Standard |
-| **Risk Level** | High, Medium, Low |
+| Field | Options | Notes |
+|-------|---------|-------|
+| **Domain** | Architecture & Buildings, Landscape & Public Realm, Urban Planning & Massing, Mobility & Transport, Environment & Climate, Social & Demographics, Utilities & Infrastructure, Administrative & Legal, Project Management, Reference & Research | LLM infers from filename, folder, and content |
+| **Scale** | Object / Parcel, Neighborhood / District, City / Municipal, Regional / National, Non-spatial | Reflects geographic scope |
+| **Lifecycle** | Brief / Concept, Schematic Design, Design Development, Construction Documents, As-Built / Completed, Reference / Archive | Derived from folder path + content signals |
+| **Asset Type** | Data, Document, Drawing, Media, Archive | Data = structured tables/GIS; Drawing = CAD/plans |
+| **Governance** | Official, Internal, External, Unknown | Source authority (client, internal, third-party) |
+| **Confidentiality** | Confidential, Sensitive, Standard | LLM judges semantic context (not just rules) |
+| **Review Priority** | Critical, High, Medium, Low | Risk assessment: combines confidentiality, age, domain, confidence |
+| **Year** | Extracted from filename, content, or file mtime | Validates 2000–present (avoids historical errors) |
+| **Age Warning** | — | Flags files predating project or significantly aged |
 
 ---
 
-## Dashboard
+## Smart Features
 
-The Streamlit dashboard includes:
-- **Coverage Map** — heatmap of files by Domain × Scale, highlights data gaps
-- **Trust Score** — governance breakdown (Official / Internal / External)
-- **Timeline View** — files per year coloured by lifecycle stage
-- **Risk Breakdown** — risk distribution per domain
-- **File Table** — filterable list with download button
+### 🚀 Parallel Processing
+Process large batches **4–8× faster**:
+```bash
+python main.py --parallel 8
+```
+Uses ThreadPoolExecutor to classify files concurrently while respecting API rate limits.
+
+### 🎨 CAD Intelligence
+DWG/Revit files now extract:
+- **Drawing code** (e.g., `A-001`, `SK-024`)
+- **Discipline** (ARCH, STRUC, MEP, LAND, CIVIL)
+- **Phase** (SK=Sketch, DD=Design Dev, CD=Construction Docs, AB=As-Built)
+- **AutoCAD version** (2018–2021, 2013–2017, etc.)
+
+Example DWG recognition:
+```
+FLB-HL-DD-A-D-001.dwg
+  → Drawing: FLB-HL-DD-A-D-001
+  → Discipline: Architecture
+  → Phase: Design Development
+  → Version: AutoCAD 2018–2021
+```
+
+### 🧠 Semantic Confidentiality Detection
+LLM judges actual context instead of just rules:
+- ✅ "30% slope" in landscape drawing → **Standard** (design spec)
+- ✅ "30% markup on budget" in cost plan → **Confidential** (business doc)
+- ✅ "$500 material cost" in spec → **Standard** (technical)
+- ✅ "$500 fee markup" in proposal → **Confidential** (commercial)
+
+### 📅 Smart Year Extraction
+- Validates years 2000–present (rejects 1915, 1950, etc.)
+- **Sources in priority order:** filename → content frequency → file mtime
+- **Confidence levels:** high (filename), medium (content ≥3 hits), low (mtime)
+
+### 📂 Interactive Dashboard
+Click any file in the table to:
+- **Show in Finder** — locate file in folder
+- **Open File** — launch with default application
+- **View metadata** — size, type, priority, summary
+
+---
+
+## Dashboard Features
+
+- **Overview Stats** — total files, critical reviews, data assets, confidentiality breakdown
+- **Domain × Scale Heatmap** — visual gap analysis
+- **Trust Scores** — governance breakdown (Official/Internal/External/Unknown)
+- **Timeline View** — files per year by lifecycle stage (spot aging issues)
+- **Risk Breakdown** — critical/high/medium/low distribution by domain
+- **File Explorer** — select, open in Finder, or download filtered CSV
 
 ---
 
 ## Tech Stack
 
-- **Python 3.9+**
-- **OpenRouter API** (Gemini 2.0 Flash or any compatible model)
-- **Streamlit** + **Plotly** for the dashboard
-- **pypdf**, **python-docx**, **pandas**, **Pillow** for content extraction
+- **Python 3.10+**
+- **OpenRouter API** (Gemini 2.0 Flash or any LLM compatible with OpenAI API)
+- **Streamlit** + **Plotly** for interactive dashboard
+- **concurrent.futures** for parallel processing
+- **pypdf**, **python-docx**, **openpyxl**, **pandas**, **Pillow** for content extraction
 
 ---
 
-## Cost Estimate
+## Performance
 
-Using `google/gemini-2.0-flash-001` via OpenRouter:
-- 100 files ≈ $0.05–0.10
-- 400 files ≈ $0.20–0.50
-- 3,000+ files ≈ $2–5
+| Files | Time (Serial) | Time (Parallel ×8) | Cost |
+|-------|---------------|-------------------|------|
+| 100 | ~8 min | ~2 min | $0.05–0.10 |
+| 400 | ~30 min | ~4 min | $0.20–0.50 |
+| 1,000 | ~75 min | ~10 min | $0.50–1.00 |
+| 3,000+ | ~4 hours | ~30 min | $2–5 |
+
+Estimated using `google/gemini-2.0-flash-001` @ ~$0.075/M tokens (input).
+
+---
+
+## Configuration
+
+Edit `config.yaml` to customize:
+
+```yaml
+project:
+  name: "Fælledby Masterplan"              # Project name
+  location: "Copenhagen, Denmark"           # Location
+  year_range: [2019, 2026]                 # Project timeline
+  lead_firm: "Henning Larsen"              # Lead designer
+  consultants: ["MOE", "BirdLife Denmark"] # Team members
+  authorities: ["Copenhagen Municipality"] # Approving bodies
+
+paths:
+  input_dir: "~/Desktop/Project"           # Folder to process
+  output_csv: "results.csv"                # Output filename
+
+processing:
+  sample_n: 400                            # Files to process (null = all)
+  model: "google/gemini-2.0-flash-001"   # LLM model
+
+dashboard:
+  port: 8502                               # Dashboard port
+  auto_launch: true                        # Open browser on start
+
+age_analysis:
+  warn_predates_years: 10                  # Warn if 10+ years before project
+  warn_postproject_years: 3                # Warn if 3+ years after project
+```
+
+---
+
+## Troubleshooting
+
+| Issue | Solution |
+|-------|----------|
+| `OPENROUTER_API_KEY not found` | Ensure `.env` file exists with valid key |
+| `Input directory not found` | Check `config.yaml` paths (use absolute or ~/home shortcuts) |
+| `LLM classification failed` | Increase timeouts, check API rate limits, switch to faster model |
+| `Dashboard won't open` | Check port 8502 is free; manually visit `http://localhost:8502` |
+| `Files misclassified as Confidential` | LLM semantic judgment was overridden; review content sample in CSV |
+
+---
+
+## License
+
+MIT — see LICENSE file for details.
+
+---
+
+## Contact
+
+Questions or suggestions? Open an issue or contact the development team.
