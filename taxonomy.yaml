@@ -1,83 +1,63 @@
-# taxonomy.yaml — Classification taxonomy injected into the LLM prompt.
-# Edit freely: add, rename, or remove entries in any section.
-# Changes take effect on the next pipeline run — no code edits needed.
-
-# ── Domains ───────────────────────────────────────────────────────────────
 domains:
-  - name: Landscape & Public Realm
-    description: landscape design, planting plans, hardscape, open space, parks, streetscape, urban furniture, ecology planting
-
-  - name: Urban Planning & Massing
-    description: masterplan drawings, land use, zoning, urban morphology, massing studies, plot ratios, phasing plans, site analysis
-
-  - name: Architecture & Buildings
-    description: building design, floor plans, sections, elevations, facades, interior layouts, structural drawings
-
-  - name: Environment & Climate
-    description: ecology, biodiversity, hydrology, wind studies, noise assessments, sustainability reports, climate analysis
-
-  - name: Mobility & Transport
-    description: roads, transit, parking, pedestrian networks, cycling routes, traffic analysis, street design
-
-  - name: Administrative & Legal
-    description: contracts, permits, legal agreements, regulatory submissions, formal approvals, legal correspondence, NDAs
-
-  - name: Project Management
-    description: schedules, budgets, meeting notes, RFIs, transmittals, internal coordination, fee tracking, progress reports
-
-  - name: Reference & Research
-    description: precedents, standards, regulations, academic sources, background data, benchmarks, site surveys
-
-  - name: Unknown
-    description: cannot determine from available information
-
-# ── Scales ────────────────────────────────────────────────────────────────
+- name: Landscape & Public Realm
+  description: landscape design, planting plans, hardscape, open space, parks, streetscape,
+    urban furniture, ecology planting
+- name: Urban Planning & Massing
+  description: masterplan drawings, land use, zoning, urban morphology, massing studies,
+    plot ratios, phasing plans, site analysis
+- name: Architecture & Buildings
+  description: building design, floor plans, sections, elevations, facades, interior
+    layouts, structural drawings
+- name: Environment & Climate
+  description: ecology, biodiversity, hydrology, wind studies, noise assessments,
+    sustainability reports, climate analysis
+- name: Mobility & Transport
+  description: roads, transit, parking, pedestrian networks, cycling routes, traffic
+    analysis, street design
+- name: Administrative & Legal
+  description: contracts, permits, legal agreements, regulatory submissions, formal
+    approvals, legal correspondence, NDAs
+- name: Project Management
+  description: schedules, budgets, meeting notes, RFIs, transmittals, internal coordination,
+    fee tracking, progress reports
+- name: Reference & Research
+  description: precedents, standards, regulations, academic sources, background data,
+    benchmarks, site surveys
+- name: Unknown
+  description: cannot determine from available information
 scales:
-  - name: Object / Parcel
-    description: single building, plot, element, or detail
-
-  - name: Neighborhood / District
-    description: urban block, district, or zone
-
-  - name: City / Municipal
-    description: city-wide or full masterplan scope
-
-  - name: Regional / National
-    description: regional, national, or cross-boundary
-
-  - name: Non-spatial
-    description: no meaningful geographic scope
-
-# ── Lifecycle stages ──────────────────────────────────────────────────────
+- name: Object / Parcel
+  description: single building, plot, element, or detail
+- name: Neighborhood / District
+  description: urban block, district, or zone
+- name: City / Municipal
+  description: city-wide or full masterplan scope
+- name: Regional / National
+  description: regional, national, or cross-boundary
+- name: Non-spatial
+  description: no meaningful geographic scope
 lifecycle_stages:
-  - name: Brief / Concept
-    description: early ideas, vision docs, RFPs, feasibility studies
-
-  - name: Schematic Design
-    description: SD phase drawings, reports, presentations
-
-  - name: Design Development
-    description: DD phase, developed drawings and specifications
-
-  - name: Construction Documents
-    description: CD phase, permit sets, tender packages, 100% submissions
-
-  - name: As-Built / Completed
-    description: final built condition, completion records, handover
-
-  - name: Reference / Archive
-    description: background research, precedents, standards, regulations
-
-  - name: Unknown
-    description: cannot determine from available information
-
-# ── Confidentiality levels ────────────────────────────────────────────────
+- name: Brief / Concept
+  description: early ideas, vision docs, RFPs, feasibility studies
+- name: Schematic Design
+  description: SD phase drawings, reports, presentations
+- name: Design Development
+  description: DD phase, developed drawings and specifications
+- name: Construction Documents
+  description: CD phase, permit sets, tender packages, 100% submissions
+- name: As-Built / Completed
+  description: final built condition, completion records, handover
+- name: Reference / Archive
+  description: background research, precedents, standards, regulations
+- name: Unknown
+  description: cannot determine from available information
 confidentiality_levels:
-  - name: Confidential
-    description: contracts, fee proposals, budgets, cost plans, legal agreements, NDAs, invoices, financial models, HR files
-
-  - name: Sensitive
-    description: internal drafts, WIP coordination files, meeting minutes, preliminary studies not yet issued externally
-
-  - name: Standard
-    description: issued drawings, public reports, technical specs, reference data, regulatory documents, client presentations
+- name: Confidential
+  description: contracts, fee proposals, budgets, cost plans, legal agreements, NDAs,
+    invoices, financial models, HR files
+- name: Sensitive
+  description: internal drafts, WIP coordination files, meeting minutes, preliminary
+    studies not yet issued externally
+- name: Standard
+  description: issued drawings, public reports, technical specs, reference data, regulatory
+    documents, client presentations

@@ -94,6 +94,8 @@ OPENROUTER_API_KEY=your-key-here
 ```bash
 streamlit run config_ui.py
 ```
+On macOS, you can also just double-click [Open DataTaxonomy.command](Open%20DataTaxonomy.command) in the project root.
+
 Open the friendly configuration UI without editing YAML. Includes:
 - 📋 Project info (name, location, year range)
 - 📂 File paths

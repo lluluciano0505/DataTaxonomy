@@ -38,6 +38,38 @@ def choose_directory_mac(prompt: str = "Select a folder") -> str | None:
     except Exception:
         return None
 
+
+def pick_directory_into_state(state_key: str, prompt: str) -> None:
+    """Open folder picker and write the chosen path into a Streamlit state key."""
+    selected_dir = choose_directory_mac(prompt)
+    if selected_dir:
+        st.session_state[state_key] = selected_dir.rstrip("/")
+    else:
+        st.session_state["path_picker_notice"] = "No folder selected."
+
+
+def split_output_csv_path(raw_path: str) -> tuple[str, str]:
+    """Split saved output_csv into folder + filename, correcting malformed repeated paths."""
+    raw_path = (raw_path or "test_output.csv").strip()
+    path_obj = Path(raw_path).expanduser()
+
+    filename = path_obj.name or "test_output.csv"
+    folder = "" if str(path_obj.parent) == "." else str(path_obj.parent)
+
+    if folder.endswith(f"/{filename}") or folder == filename:
+        folder = folder[:-(len(filename) + 1)] if folder.endswith(f"/{filename}") else ""
+
+    return folder, filename
+
+
+def build_output_csv_path(output_dir: str, output_name: str) -> str:
+    """Build normalized output_csv path from folder + filename."""
+    output_name = (output_name or "test_output.csv").strip() or "test_output.csv"
+    if not output_name.lower().endswith(".csv"):
+        output_name = f"{output_name}.csv"
+    output_dir = (output_dir or "").strip()
+    return str(Path(output_dir).expanduser() / output_name) if output_dir else output_name
+
 # Page config
 st.set_page_config(
     page_title="DataTaxonomy — Configuration",
@@ -281,15 +313,14 @@ with tab1:
     st.divider()
     st.subheader("Project Paths")
     paths = config.get("paths", {})
-    output_csv_path = Path(paths.get("output_csv", "test_output.csv"))
-    output_dir_default = "" if str(output_csv_path.parent) == "." else str(output_csv_path.parent)
+    output_dir_default, output_name_default = split_output_csv_path(paths.get("output_csv", "test_output.csv"))
 
     if "input_dir_value" not in st.session_state:
         st.session_state["input_dir_value"] = paths.get("input_dir", "")
-    if "output_dir_value" not in st.session_state:
+    if "output_dir_value" not in st.session_state or st.session_state["output_dir_value"] == st.session_state.get("output_name_value"):
         st.session_state["output_dir_value"] = output_dir_default
     if "output_name_value" not in st.session_state:
-        st.session_state["output_name_value"] = output_csv_path.name or "test_output.csv"
+        st.session_state["output_name_value"] = output_name_default
 
     p1, p2 = st.columns(2)
     with p1:
@@ -298,26 +329,26 @@ with tab1:
             key="input_dir_value",
             help="Folder containing files to process"
         )
-        if st.button("📂 Choose Input Folder", key="pick_input_dir", use_container_width=True):
-            selected_dir = choose_directory_mac("Choose the input directory for processing")
-            if selected_dir:
-                st.session_state["input_dir_value"] = selected_dir.rstrip("/")
-                st.rerun()
-            else:
-                st.info("No folder selected.")
+        st.button(
+            "📂 Choose Input Folder",
+            key="pick_input_dir",
+            use_container_width=True,
+            on_click=pick_directory_into_state,
+            args=("input_dir_value", "Choose the input directory for processing"),
+        )
     with p2:
         output_dir = st.text_input(
             "Output Folder",
             key="output_dir_value",
             help="Folder where the results CSV will be saved"
         )
-        if st.button("📁 Choose Output Folder", key="pick_output_dir", use_container_width=True):
-            selected_dir = choose_directory_mac("Choose the output folder for results")
-            if selected_dir:
-                st.session_state["output_dir_value"] = selected_dir.rstrip("/")
-                st.rerun()
-            else:
-                st.info("No folder selected.")
+        st.button(
+            "📁 Choose Output Folder",
+            key="pick_output_dir",
+            use_container_width=True,
+            on_click=pick_directory_into_state,
+            args=("output_dir_value", "Choose the output folder for results"),
+        )
 
         output_name = st.text_input(
             "Output CSV Filename",
@@ -325,8 +356,10 @@ with tab1:
             help="CSV filename, for example test_output.csv"
         )
 
-    output_csv = str(Path(output_dir).expanduser() / output_name) if output_dir else output_name
+    output_csv = build_output_csv_path(output_dir, output_name)
     st.caption(f"Result path: {output_csv}")
+    if st.session_state.get("path_picker_notice"):
+        st.info(st.session_state.pop("path_picker_notice"))
 
     b1, b2 = st.columns(2)
     with b2:
@@ -354,7 +387,7 @@ with tab1:
         }
         config["paths"] = {
             "input_dir": input_dir,
-            "output_csv": output_csv,
+            "output_csv": build_output_csv_path(output_dir, output_name),
         }
         save_config(config)
 

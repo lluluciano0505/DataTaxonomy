@@ -85,7 +85,7 @@ def process_data(paths: dict, project: dict, processing: dict, api_key: str, par
     print("-" * 70)
     
     config = build_config(project=project, model=processing["model"], api_key=api_key)
-        config["taxonomy"] = load_taxonomy()
+    config["taxonomy"] = load_taxonomy()
     
     try:
         summary = run(

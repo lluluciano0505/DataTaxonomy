@@ -1,10 +1,10 @@
 project:
-  name: King Salman Park
-  location: Riyadh, Saudi Arabia
+  name: Fælledby
+  location: Copenhagen, Denmark
   year_range:
-  - 2024
-  - 2024
-  lead_firm: OMRANIA AND HENNING LARSEN
+  - 2018
+  - 2031
+  lead_firm: Henning Larsen
   consultants:
   - BirdLife Denmark
   - Faroese roots
@@ -16,11 +16,11 @@ project:
   - By & Havn
   - Copenhagen Municipality
   - Danish EPA
-  notes: King Salman Park is being developed on the site of the old Riyadh Air Base
-    and aims to merge with the city, with radial blocks flowing towards the central
-    green space.
+  notes: Fælledby is Copenhagen’s first all-timber neighborhood, designed to harmonize
+    the urban environment with natural landscapes. It establishes a community of ecologically
+    responsive housing units organized according to the model of a ‘rural village’.
 paths:
-  input_dir: ~/Desktop/Henning Larsen/2022Masterplan
+  input_dir: /Users/luchieeoo/Desktop/Henning Larsen/Fælledby
   output_csv: test_output.csv
 processing:
   sample_n: 100
