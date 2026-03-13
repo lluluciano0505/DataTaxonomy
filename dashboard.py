@@ -118,6 +118,80 @@ c4.metric("No Immediate Review", max(len(filtered) - len(needs_review), 0))
 
 st.divider()
 
+# Layer 4: Ask the archive
+st.markdown('<div class="section-label">Layer 4 Query</div>', unsafe_allow_html=True)
+st.subheader("Ask the Archive")
+st.caption("Ask a question against the current filtered files. Layer 4 will shortlist files, re-read them, and answer with evidence.")
+
+query_default = st.session_state.get("layer4_question", "")
+query_text = st.text_area(
+    "Question",
+    value=query_default,
+    placeholder="例如：什么木材适合使用？ / 哪里提到清真寺？ / Which files mention hydrology constraints?",
+    height=90,
+    key="layer4_question_box",
+)
+
+if st.button("🔎 Run Layer 4 Query", use_container_width=True, type="primary", key="run_layer4_query"):
+    st.session_state["layer4_question"] = query_text
+    if not query_text.strip():
+        st.warning("Please enter a question first.")
+    elif filtered.empty:
+        st.warning("No files are available under the current filters.")
+    elif not api_key:
+        st.error("OPENROUTER_API_KEY is missing. Add it to .env before using Layer 4.")
+    else:
+        with st.spinner("Layer 4 is searching, re-reading files, and synthesizing an answer..."):
+            try:
+                client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=api_key)
+                result = layer4_query(
+                    question=query_text,
+                    processed_df=filtered,
+                    client=client,
+                    model=layer4_model,
+                )
+                st.session_state["layer4_result"] = result
+            except Exception as e:
+                st.session_state["layer4_result"] = {
+                    "question": query_text,
+                    "answer": "Layer 4 query failed.",
+                    "confidence": "Low",
+                    "gaps": str(e),
+                    "relevant_files": [],
+                    "candidate_count": 0,
+                    "deep_read_count": 0,
+                    "search_plan": {},
+                    "candidates": [],
+                }
+
+layer4_result = st.session_state.get("layer4_result")
+if layer4_result:
+    r1, r2 = st.columns([3, 1])
+    with r1:
+        st.markdown("**Answer**")
+        st.write(layer4_result.get("answer", ""))
+        if layer4_result.get("gaps"):
+            st.caption(f"Gaps / uncertainty: {layer4_result.get('gaps')}")
+    with r2:
+        st.metric("Confidence", layer4_result.get("confidence", "Low"))
+        st.metric("Candidate Files", layer4_result.get("candidate_count", 0))
+        st.metric("Deep Read Files", layer4_result.get("deep_read_count", 0))
+
+    relevant_files = layer4_result.get("relevant_files", [])
+    if relevant_files:
+        st.markdown("**Relevant Files**")
+        st.dataframe(pd.DataFrame(relevant_files), use_container_width=True, height=240)
+
+    with st.expander("Show retrieval details", expanded=False):
+        search_plan = layer4_result.get("search_plan", {})
+        if search_plan:
+            st.json(search_plan)
+        candidates = layer4_result.get("candidates", [])
+        if candidates:
+            st.dataframe(pd.DataFrame(candidates), use_container_width=True, height=220)
+
+st.divider()
+
 # ROW 2: Structure overview
 st.markdown('<div class="section-label">Structure</div>', unsafe_allow_html=True)
 
@@ -223,78 +297,6 @@ if not needs_review.empty:
     st.dataframe(needs_review[review_cols], use_container_width=True, height=260)
 else:
     st.success("No files currently flagged for review in this filter.")
-
-st.divider()
-
-# Layer 4: Ask the archive
-st.markdown('<div class="section-label">Layer 4 Query</div>', unsafe_allow_html=True)
-st.subheader("Ask the Archive")
-st.caption("Ask a question against the current filtered files. Layer 4 will shortlist files, re-read them, and answer with evidence.")
-
-query_default = st.session_state.get("layer4_question", "")
-query_text = st.text_area(
-    "Question",
-    value=query_default,
-    placeholder="例如：什么木材适合使用？ / 哪里提到清真寺？ / Which files mention hydrology constraints?",
-    height=90,
-    key="layer4_question_box",
-)
-
-if st.button("🔎 Run Layer 4 Query", use_container_width=True, type="primary", key="run_layer4_query"):
-    st.session_state["layer4_question"] = query_text
-    if not query_text.strip():
-        st.warning("Please enter a question first.")
-    elif filtered.empty:
-        st.warning("No files are available under the current filters.")
-    elif not api_key:
-        st.error("OPENROUTER_API_KEY is missing. Add it to .env before using Layer 4.")
-    else:
-        with st.spinner("Layer 4 is searching, re-reading files, and synthesizing an answer..."):
-            try:
-                client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=api_key)
-                result = layer4_query(
-                    question=query_text,
-                    processed_df=filtered,
-                    client=client,
-                    model=layer4_model,
-                )
-                st.session_state["layer4_result"] = result
-            except Exception as e:
-                st.session_state["layer4_result"] = {
-                    "question": query_text,
-                    "answer": "Layer 4 query failed.",
-                    "confidence": "Low",
-                    "gaps": str(e),
-                    "relevant_files": [],
-                    "candidate_count": 0,
-                    "search_plan": {},
-                    "candidates": [],
-                }
-
-layer4_result = st.session_state.get("layer4_result")
-if layer4_result:
-    r1, r2 = st.columns([3, 1])
-    with r1:
-        st.markdown("**Answer**")
-        st.write(layer4_result.get("answer", ""))
-        if layer4_result.get("gaps"):
-            st.caption(f"Gaps / uncertainty: {layer4_result.get('gaps')}")
-    with r2:
-        st.metric("Confidence", layer4_result.get("confidence", "Low"))
-        st.metric("Candidate Files", layer4_result.get("candidate_count", 0))
-
-    relevant_files = layer4_result.get("relevant_files", [])
-    if relevant_files:
-        st.markdown("**Relevant Files**")
-        st.dataframe(pd.DataFrame(relevant_files), use_container_width=True, height=240)
-
-    with st.expander("Show retrieval details", expanded=False):
-        search_plan = layer4_result.get("search_plan", {})
-        if search_plan:
-            st.json(search_plan)
-        candidates = layer4_result.get("candidates", [])
-        if candidates:
-            st.dataframe(pd.DataFrame(candidates), use_container_width=True, height=220)
 
 st.divider()
 

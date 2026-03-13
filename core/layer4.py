@@ -13,6 +13,7 @@ import json
 import re
 from pathlib import Path
 from typing import Any
+from collections import Counter
 
 import pandas as pd
 from openai import OpenAI
@@ -50,6 +51,32 @@ Rules:
 - If unsure, return broad but useful hints instead of inventing specifics.
 
 Question: {question}
+"""
+
+
+SELECT_CANDIDATES_PROMPT = """\
+You help shortlist archive files for deep reading.
+You are given a user question and a list of candidate files with metadata and short summaries.
+
+Return ONLY JSON with this shape:
+{
+    "selected_file_paths": ["<full path>", "<full path>"],
+    "selection_reason": "<one sentence>",
+    "notes": "<optional note about uncertainty>"
+}
+
+Rules:
+- Select 2 to 5 file paths that are most worth reading in full.
+- Prefer files whose summary, filename, domain, lifecycle, and path suggest direct evidence.
+- If the question is about location, prioritize plans, reports, and summaries likely to mention places.
+- If the question is about suitability or recommendation, prioritize specs, reports, data, and studies.
+- Do not invent file paths.
+
+Question:
+{question}
+
+Candidate previews:
+{candidate_preview}
 """
 
 
@@ -206,8 +233,146 @@ def rank_candidate_rows(df: pd.DataFrame, plan: dict, top_k: int = 8) -> pd.Data
     return ranked.head(min(top_k, len(ranked)))
 
 
+def _read_full_file_content(file_path: Path, max_chars: int = 12000) -> tuple[str, str]:
+    """Read a deeper/full content slice for query answering, beyond layer1 short samples."""
+    ext = file_path.suffix.lower()
+
+    try:
+        if ext == ".pdf":
+            from pypdf import PdfReader
+            reader = PdfReader(str(file_path))
+            parts: list[str] = []
+            for page_idx, page in enumerate(reader.pages):
+                text = (page.extract_text() or "").strip()
+                if text:
+                    parts.append(f"[p{page_idx + 1}] {text}")
+                if sum(len(p) for p in parts) >= max_chars:
+                    break
+            raw = "\n".join(parts)
+            return raw[:max_chars] or "[PDF has little or no extractable text]", f"fuller PDF pass across {min(len(reader.pages), page_idx + 1 if 'page_idx' in locals() else 0)} page(s)"
+
+        if ext in {".docx", ".doc"}:
+            import docx
+            doc = docx.Document(str(file_path))
+            parts = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
+            for table in doc.tables:
+                for row in table.rows:
+                    row_text = " | ".join(cell.text.strip() for cell in row.cells if cell.text.strip())
+                    if row_text:
+                        parts.append(row_text)
+                    if sum(len(p) for p in parts) >= max_chars:
+                        break
+            raw = "\n".join(parts)
+            return raw[:max_chars] or "[Document has little extractable text]", "fuller DOCX pass"
+
+        if ext == ".pptx":
+            from pptx import Presentation
+            prs = Presentation(str(file_path))
+            parts: list[str] = []
+            for i, slide in enumerate(prs.slides):
+                texts = [shape.text.strip() for shape in slide.shapes if shape.has_text_frame and shape.text.strip()]
+                if texts:
+                    parts.append(f"[Slide {i+1}] " + " | ".join(texts))
+                if sum(len(p) for p in parts) >= max_chars:
+                    break
+            raw = "\n".join(parts)
+            return raw[:max_chars] or "[Presentation has little extractable text]", "fuller PPTX pass"
+
+        if ext in {".txt", ".json"}:
+            raw = file_path.read_text(encoding="utf-8", errors="replace")
+            return raw[:max_chars], "full text read"
+
+        if ext == ".csv":
+            df = pd.read_csv(file_path, encoding="utf-8", errors="replace")
+            raw = f"Columns: {list(df.columns)}\n{df.head(80).to_string()}"
+            return raw[:max_chars], "CSV deeper tabular read"
+
+        if ext in {".xlsx", ".xls"}:
+            xl = pd.ExcelFile(str(file_path))
+            blocks: list[str] = [f"Sheets: {xl.sheet_names}"]
+            for sheet in xl.sheet_names[:3]:
+                df = pd.read_excel(file_path, sheet_name=sheet, nrows=40)
+                blocks.append(f"[Sheet: {sheet}]\nColumns: {list(df.columns)}\n{df.to_string()}")
+                if sum(len(b) for b in blocks) >= max_chars:
+                    break
+            raw = "\n\n".join(blocks)
+            return raw[:max_chars], "Excel deeper read"
+
+        if ext == ".eml":
+            import email
+            from email import policy as email_policy
+            with open(file_path, encoding="utf-8", errors="replace") as f:
+                msg = email.message_from_file(f, policy=email_policy.default)
+            body_parts = []
+            if msg.is_multipart():
+                for part in msg.walk():
+                    if part.get_content_type() == "text/plain":
+                        body_parts.append(part.get_content() or "")
+            else:
+                body_parts.append(msg.get_content() or "")
+            raw = f"From: {msg.get('From', '')}\nSubject: {msg.get('Subject', '')}\nDate: {msg.get('Date', '')}\n\n" + "\n".join(body_parts)
+            return raw[:max_chars], "fuller email read"
+    except Exception:
+        pass
+
+    fallback = layer1_technical(file_path)
+    return str(fallback.get("content_sample", ""))[:max_chars], str(fallback.get("extraction_coverage", "layer1 fallback"))
+
+
+def _build_candidate_preview(candidates: pd.DataFrame) -> str:
+    parts: list[str] = []
+    for idx, (_, row) in enumerate(candidates.iterrows(), start=1):
+        parts.append(
+            f"[Preview {idx}]\n"
+            f"Filename: {row.get('filename', '')}\n"
+            f"Path: {row.get('file_path', '')}\n"
+            f"Domain: {row.get('domain', '')}\n"
+            f"Asset Type: {row.get('asset_type', '')}\n"
+            f"Lifecycle: {row.get('lifecycle', '')}\n"
+            f"Score: {float(row.get('_query_score', 0)):.1f}\n"
+            f"Summary: {row.get('short_summary', '')}\n"
+            f"Reasons: {row.get('review_reasons', '')}\n"
+        )
+    return "\n\n".join(parts)
+
+
+def select_files_for_deep_read(question: str, candidates: pd.DataFrame, client: OpenAI, model: str, max_select: int = 4) -> pd.DataFrame:
+    """Use the LLM to choose which candidate files deserve deeper reading."""
+    if candidates.empty:
+        return candidates
+
+    fallback = candidates.head(max_select)
+    try:
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": "Respond only with valid JSON."},
+                {
+                    "role": "user",
+                    "content": SELECT_CANDIDATES_PROMPT.format(
+                        question=question.strip(),
+                        candidate_preview=_build_candidate_preview(candidates),
+                    ),
+                },
+            ],
+            temperature=0,
+            response_format={"type": "json_object"},
+        )
+        raw = resp.choices[0].message.content or ""
+        parsed = _safe_json_loads(raw, {})
+        selected_paths = [str(x) for x in parsed.get("selected_file_paths", []) if str(x).strip()]
+        if selected_paths:
+            selected = candidates[candidates["file_path"].astype(str).isin(selected_paths)]
+            if not selected.empty:
+                return selected.head(max_select)
+    except Exception:
+        pass
+
+    return fallback
+
+
 def reread_candidate_files(candidates: pd.DataFrame, max_files: int = 6) -> list[dict[str, Any]]:
-    """Re-read the most relevant files from disk using Layer 1 extraction."""
+    """Re-read selected files from disk using deeper/full-content reads when possible."""
     reread_docs: list[dict[str, Any]] = []
 
     for _, row in candidates.head(max_files).iterrows():
@@ -227,6 +392,7 @@ def reread_candidate_files(candidates: pd.DataFrame, max_files: int = 6) -> list
             continue
 
         try:
+            content_sample, coverage = _read_full_file_content(file_path)
             reread = layer1_technical(file_path)
             reread_docs.append({
                 "filename": reread.get("filename", file_path.name),
@@ -235,8 +401,8 @@ def reread_candidate_files(candidates: pd.DataFrame, max_files: int = 6) -> list
                 "asset_type": row.get("asset_type", "Unknown"),
                 "lifecycle": row.get("lifecycle", "Unknown"),
                 "summary": row.get("short_summary", ""),
-                "coverage": reread.get("extraction_coverage", ""),
-                "content_sample": reread.get("content_sample", "")[:2200],
+                "coverage": coverage or reread.get("extraction_coverage", ""),
+                "content_sample": content_sample[:12000],
                 "query_score": float(row.get("_query_score", 0)),
             })
         except Exception as exc:
@@ -349,7 +515,8 @@ def layer4_query(
 
     plan = build_search_plan(question, client=client, model=model)
     candidates = rank_candidate_rows(processed_df, plan=plan, top_k=top_k)
-    reread_docs = reread_candidate_files(candidates, max_files=reread_k)
+    deep_read_candidates = select_files_for_deep_read(question, candidates, client=client, model=model, max_select=reread_k)
+    reread_docs = reread_candidate_files(deep_read_candidates, max_files=reread_k)
     answer = synthesize_query_answer(question, reread_docs, client=client, model=model)
 
     return {
@@ -360,6 +527,7 @@ def layer4_query(
         "gaps": answer.get("gaps", ""),
         "relevant_files": answer.get("relevant_files", []),
         "candidate_count": int(len(candidates)),
+        "deep_read_count": int(len(deep_read_candidates)),
         "candidates": candidates[[c for c in [
             "filename", "file_path", "domain", "asset_type", "lifecycle", "short_summary", "_query_score"
         ] if c in candidates.columns]].to_dict("records"),
