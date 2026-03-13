@@ -38,12 +38,11 @@
       }
     },
     {
-      "label": "Run Pipeline (No Dashboard)",
+      "label": "Run Pipeline",
       "type": "shell",
       "command": "python",
       "args": [
-        "main.py",
-        "--no-dashboard"
+        "main.py"
       ],
       "presentation": {
         "reveal": "always",

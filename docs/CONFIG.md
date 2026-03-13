@@ -55,12 +55,6 @@ Set in `.env`:
 ```bash
 # Run with custom config file
 python main.py --config my_config.yaml
-
-# Process data without launching dashboard
-python main.py --no-dashboard
-
-# Combine options
-python main.py --config my_config.yaml --no-dashboard
 ```
 
 ## Switching Between Projects

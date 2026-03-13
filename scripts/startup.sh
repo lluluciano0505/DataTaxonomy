@@ -38,27 +38,27 @@ echo ""
 
 # Option selection
 echo "Choose what to run:"
-echo "1) Process data only (no dashboard)"
-echo "2) Full pipeline (process + dashboard)"
-echo "3) Dashboard only (skip processing)"
+echo "1) Full pipeline (process + dashboard)"
+echo "2) Dashboard only (skip processing)"
+echo "3) Open Config UI (web setup)"
 echo ""
 read -p "Enter choice (1-3): " choice
 
 case $choice in
     1)
         echo ""
-        echo "📊 Processing data..."
-        python main.py --no-dashboard
-        ;;
-    2)
-        echo ""
         echo "🚀 Running full pipeline..."
         python main.py
         ;;
-    3)
+    2)
         echo ""
         echo "📈 Launching dashboard..."
         streamlit run dashboard.py
+        ;;
+    3)
+        echo ""
+        echo "⚙️ Opening config UI..."
+        streamlit run config_ui.py --server.port 8502
         ;;
     *)
         echo "❌ Invalid choice"

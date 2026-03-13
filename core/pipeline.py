@@ -94,6 +94,7 @@ def process_file(file_path: Path, client: OpenAI, config: dict, input_path: Opti
         input_path      = resolved_input_path,
         project_context = config["project_context"],
         temperature     = config["temperature"],
+        taxonomy        = config.get("taxonomy"),
     )
 
     l3 = layer3_trust(

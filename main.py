@@ -17,6 +17,7 @@ from config_loader import (
     load_config, get_project_config, get_paths_config,
     get_processing_config, get_dashboard_config,
     validate_input_path,
+    load_taxonomy,
 )
 
 # ── Load environment ────────────────────────────────────────────────────
@@ -32,7 +33,6 @@ def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(description="DataTaxonomy Pipeline")
     parser.add_argument("--config", default="config.yaml", help="Path to config.yaml")
-    parser.add_argument("--no-dashboard", action="store_true", help="Skip dashboard launch")
     parser.add_argument("--parallel", type=int, default=1, help="Number of parallel workers (1=serial, >1=parallel)")
     args = parser.parse_args()
     
@@ -71,11 +71,10 @@ def main():
         sys.exit(1)
     
     # ── Step 2: Launch Dashboard ──────────────────────────────────────────
-    if not args.no_dashboard:
-        try:
-            launch_dashboard(dashboard_cfg)
-        except KeyboardInterrupt:
-            print("\n\n👋 Dashboard closed.")
+    try:
+        launch_dashboard(dashboard_cfg)
+    except KeyboardInterrupt:
+        print("\n\n👋 Dashboard closed.")
 
 
 def process_data(paths: dict, project: dict, processing: dict, api_key: str, parallel: int = 1) -> bool:
@@ -86,6 +85,7 @@ def process_data(paths: dict, project: dict, processing: dict, api_key: str, par
     print("-" * 70)
     
     config = build_config(project=project, model=processing["model"], api_key=api_key)
+        config["taxonomy"] = load_taxonomy()
     
     try:
         summary = run(
@@ -117,6 +117,3 @@ def launch_dashboard(dashboard_cfg: dict) -> None:
 
 if __name__ == "__main__":
     main()
-    
-    sys.argv = ["streamlit", "run", "dashboard.py", "--logger.level=error"]
-    stcli.main()

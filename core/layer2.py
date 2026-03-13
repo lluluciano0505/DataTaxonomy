@@ -377,6 +377,65 @@ def _format_filename_signals(meta: dict) -> str:
     return "\n".join(lines) if lines else "  (no structural signals detected)"
 
 
+# ── Taxonomy defaults + prompt section builder ────────────────────────────
+_DEFAULT_TAXONOMY: dict = {
+  "domains": [
+    {"name": "Landscape & Public Realm",  "description": "landscape design, planting plans, hardscape, open space, parks, streetscape, urban furniture"},
+    {"name": "Urban Planning & Massing",   "description": "masterplan drawings, land use, zoning, urban morphology, massing studies, plot ratios, phasing plans"},
+    {"name": "Architecture & Buildings",   "description": "building design, floor plans, sections, elevations, facades, interior layouts, structural drawings"},
+    {"name": "Environment & Climate",      "description": "ecology, biodiversity, hydrology, wind, noise, sustainability assessments"},
+    {"name": "Mobility & Transport",       "description": "roads, transit, parking, pedestrian/cycling networks, traffic analysis"},
+    {"name": "Administrative & Legal",     "description": "contracts, permits, legal agreements, regulatory submissions, formal approvals, legal correspondence"},
+    {"name": "Project Management",         "description": "schedules, budgets, meeting notes, RFIs, transmittals, internal coordination, fee tracking"},
+    {"name": "Reference & Research",       "description": "precedents, standards, regulations, academic sources, background data"},
+    {"name": "Unknown",                    "description": "cannot determine from available information"},
+  ],
+  "scales": [
+    {"name": "Object / Parcel",         "description": "single building, plot, element, or detail"},
+    {"name": "Neighborhood / District", "description": "urban block, district, or zone"},
+    {"name": "City / Municipal",        "description": "city-wide or full masterplan scope"},
+    {"name": "Regional / National",     "description": "regional, national, or cross-boundary"},
+    {"name": "Non-spatial",             "description": "no meaningful geographic scope"},
+  ],
+  "lifecycle_stages": [
+    {"name": "Brief / Concept",        "description": "early ideas, vision docs, RFPs, feasibility"},
+    {"name": "Schematic Design",       "description": "SD phase drawings, reports, presentations"},
+    {"name": "Design Development",     "description": "DD phase, developed drawings and specs"},
+    {"name": "Construction Documents", "description": "CD phase, permit sets, tender packages, 100% submissions"},
+    {"name": "As-Built / Completed",   "description": "final built condition, completion records"},
+    {"name": "Reference / Archive",    "description": "background research, precedents, standards, regulations"},
+    {"name": "Unknown",                "description": "cannot determine from available information"},
+  ],
+  "confidentiality_levels": [
+    {"name": "Confidential", "description": "contracts, fee proposals, budgets, cost plans, legal agreements, NDAs, invoices, financial models, HR files"},
+    {"name": "Sensitive",    "description": "internal drafts, WIP coordination files, meeting minutes, preliminary studies not yet issued externally"},
+    {"name": "Standard",     "description": "issued drawings, public reports, technical specs, reference data, regulatory documents"},
+  ],
+}
+
+
+def _build_prompt_sections(taxonomy: dict) -> dict:
+  """Convert taxonomy dict → formatted prompt choice-list strings."""
+  def _fmt(items: list) -> str:
+    if not items:
+      return "  Unknown — no options configured"
+    max_len = max(len(d.get("name", "")) for d in items)
+    lines = ["Pick one:"]
+    for item in items:
+      name = item.get("name", "")
+      desc = item.get("description", "")
+      pad  = " " * (max_len - len(name) + 2)
+      lines.append(f"  {name}{pad}— {desc}")
+    return "\n".join(lines)
+
+  return {
+    "domain_options":          _fmt(taxonomy.get("domains",               [])),
+    "scale_options":           _fmt(taxonomy.get("scales",                [])),
+    "lifecycle_options":       _fmt(taxonomy.get("lifecycle_stages",      [])),
+    "confidentiality_options": _fmt(taxonomy.get("confidentiality_levels", [])),
+  }
+
+
 # ── Prompt ────────────────────────────────────────────────────────────────
 LAYER2_PROMPT = """\
 You are an urban design data classifier working on a large-scale city project.
@@ -463,23 +522,7 @@ Step 1: Write a brief reasoning chain in _reasoning (2–4 sentences max).
 Step 2: Fill every classification field using the rules below.
 
 ─── DOMAIN ───────────────────────────────────────────────────────────────
-Pick one:
-  Administrative & Legal     — contracts, permits, legal agreements, regulatory
-                               submissions, formal approvals, legal correspondence
-  Architecture & Buildings   — building design, floor plans, sections, elevations,
-                               facades, interior layouts, structural drawings
-  Landscape & Public Realm   — landscape design, planting plans, hardscape, open
-                               space, parks, streetscape, urban furniture
-  Urban Planning & Massing   — masterplan drawings, land use, zoning, urban
-                               morphology, massing studies, plot ratios, phasing plans
-  Mobility & Transport       — roads, transit, parking, pedestrian/cycling networks
-  Environment & Climate      — ecology, hydrology, wind, noise, sustainability
-  Social & Demographics      — population, housing needs, community data
-  Utilities & Infrastructure — water, energy, waste, telecoms, drainage systems
-  Project Management         — schedules, budgets, meeting notes, RFIs, transmittals,
-                               internal coordination, fee tracking
-  Reference & Research       — precedents, standards, regulations, academic sources
-  Unknown                    — cannot determine from available information
+{domain_options}
 
 DOMAIN DECISION RULES (check in order):
   1. If filename_signals.discipline_code is set, use it as your primary domain
@@ -510,12 +553,7 @@ DOMAIN DECISION RULES (check in order):
   9. Process/coordination files → Project Management
 
 ─── SCALE ────────────────────────────────────────────────────────────────
-Pick one:
-  Object / Parcel            — single building, plot, element, or detail
-  Neighborhood / District    — urban block, district, or zone
-  City / Municipal           — city-wide or full masterplan scope
-  Regional / National        — regional, national, or cross-boundary
-  Non-spatial                — no meaningful geographic scope
+{scale_options}
 
 SCALE RULES:
   - "masterplan" anywhere in folder chain → City / Municipal
@@ -541,14 +579,7 @@ INFORMATION_TYPE RULES:
   - is_data_hint=Likely + spatial format → Spatial / Cartographic
 
 ─── LIFECYCLE ────────────────────────────────────────────────────────────
-Pick one:
-  Brief / Concept            — early ideas, vision docs, RFPs, feasibility
-  Schematic Design           — SD phase drawings, reports, presentations
-  Design Development         — DD phase, developed drawings and specs
-  Construction Documents     — CD phase, permit sets, tender packages, 100% submissions
-  As-Built / Completed       — final built condition, completion records
-  Reference / Archive        — background research, precedents, standards, regulations
-  Unknown                    — cannot determine from available information
+{lifecycle_options}
 
 LIFECYCLE RULES (apply in order):
   1. If the LIFECYCLE HINT above is set, use it as your default answer.
@@ -586,15 +617,7 @@ GOVERNANCE SIGNALS:
         Unknown only when zero signals are available.
 
 ─── CONFIDENTIALITY ──────────────────────────────────────────────────────
-Pick one:
-  Confidential  — contracts, fee proposals, budgets, cost plans, legal agreements,
-                  NDAs, LOAs, LOIs, MoUs, invoices, payment records, financial models,
-                  HR / personnel files, private correspondence, bid prices
-  Sensitive     — internal draft reports, WIP coordination files, meeting minutes,
-                  RFIs, transmittals, internal memos, staff-facing documents,
-                  preliminary / pre-design studies not yet issued externally
-  Standard      — issued drawings, public reports, technical specs, reference data,
-                  regulatory documents, presentations for client/authority review
+{confidentiality_options}
 
 CONFIDENTIALITY RULES (apply in order):
   ⚠️  IMPORTANT: The pre-computed CONFIDENTIALITY HINT is a STARTING POINT ONLY,
@@ -737,6 +760,7 @@ def layer2_domain(
     input_path: Path,
     project_context: str,
     temperature: float = 0,
+    taxonomy: dict = None,
 ) -> dict:
     """
     Classify a file using the LLM.
@@ -799,6 +823,8 @@ def layer2_domain(
     content_indented = "\n".join("  " + line for line in content_sample.splitlines()) if content_sample else "  (no content extractable)"
 
     prompt = LAYER2_PROMPT.format(
+        # ── Build taxonomy-driven choice lists ────────────────────────────
+        **_build_prompt_sections(taxonomy or _DEFAULT_TAXONOMY),
         project_context          = project_context,
         filename                 = meta["filename"],
         format                   = meta["format"],

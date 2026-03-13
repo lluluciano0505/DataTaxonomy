@@ -132,8 +132,15 @@ DataTaxonomy/
 │   ├── layer2.py              # LLM classification
 │   ├── layer3.py              # Risk & age analysis
 │   └── pipeline.py            # Batch runner, parallel support
+├── docs/
+│   ├── CONFIG.md
+│   ├── QUICKSTART.md
+│   └── RUN_METHODS.md
 ├── pic/
 │   └── DT.jpg                 # Application banner/logo
+├── scripts/
+│   ├── start_web.sh
+│   └── startup.sh
 ├── config.yaml                # Project config (no code edits needed)
 ├── config_loader.py           # Config parser
 ├── config_ui.py               # Web-based config manager ⭐ NEW

@@ -1,26 +1,29 @@
 project:
-  name: Fælledby Masterplan
-  location: Copenhagen, Denmark
+  name: King Salman Park
+  location: Riyadh, Saudi Arabia
   year_range:
-  - 2019
-  - 2026
-  lead_firm: Henning Larsen
+  - 2024
+  - 2024
+  lead_firm: OMRANIA AND HENNING LARSEN
   consultants:
-  - MOE
   - BirdLife Denmark
-  - VIVA Landscape
+  - Faroese roots
+  - MOE
   - Niras
+  - Trondheim to Hong Kong
+  - VIVA Landscape
   authorities:
-  - Copenhagen Municipality
   - By & Havn
+  - Copenhagen Municipality
   - Danish EPA
-  drawing_code: FLB-[FIRM]-[PHASE]-[DISCIPLINE]-[TYPE]-[NUMBER]
-  notes: Timber-based rural-urban community. Focus on biodiversity and local ecology.
+  notes: King Salman Park is being developed on the site of the old Riyadh Air Base
+    and aims to merge with the city, with radial blocks flowing towards the central
+    green space.
 paths:
-  input_dir: ~/Desktop/Henning Larsen/Fælledby
+  input_dir: ~/Desktop/Henning Larsen/2022Masterplan
   output_csv: test_output.csv
 processing:
-  sample_n: 40
+  sample_n: 100
   model: google/gemini-2.0-flash-001
   parallel_workers: 16
   api_timeout: 30

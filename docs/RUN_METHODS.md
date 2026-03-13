@@ -12,11 +12,6 @@
 python main.py
 ```
 
-### Process only (no dashboard)
-```bash
-python main.py --no-dashboard
-```
-
 ### Parallel processing (faster)
 ```bash
 python main.py --parallel 8
@@ -37,7 +32,7 @@ python main.py --help
 ## 2) Conda example
 
 ```bash
-conda run -p /opt/anaconda3 python main.py --no-dashboard
+conda run -p /opt/anaconda3 python main.py
 ```
 
 ---

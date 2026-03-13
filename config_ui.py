@@ -10,6 +10,33 @@ from pathlib import Path
 from datetime import datetime
 import subprocess
 import sys
+import re
+import os
+import json
+from urllib.parse import urlparse
+import requests
+from bs4 import BeautifulSoup
+from openai import OpenAI
+from dotenv import load_dotenv
+load_dotenv()
+
+
+def choose_directory_mac(prompt: str = "Select a folder") -> str | None:
+    """Open native macOS folder picker and return selected POSIX path."""
+    script = f'POSIX path of (choose folder with prompt "{prompt}")'
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            return None
+        selected = result.stdout.strip()
+        return selected or None
+    except Exception:
+        return None
 
 # Page config
 st.set_page_config(
@@ -44,6 +71,83 @@ def save_config(config: dict):
     st.success("✅ Configuration saved!")
     st.cache_data.clear()
 
+
+def _scrape_page_text(url: str) -> str:
+    """Scrape a URL with requests + BeautifulSoup and return clean readable text."""
+    resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
+    resp.raise_for_status()
+    soup = BeautifulSoup(resp.text, "html.parser")
+    # Remove noise tags
+    for tag in soup(["script", "style", "nav", "footer", "header", "aside", "iframe", "noscript"]):
+        tag.decompose()
+    text = soup.get_text(separator=" ", strip=True)
+    # Collapse whitespace
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:6000]  # keep within safe LLM context
+
+
+def infer_project_config_from_url(url: str) -> dict:
+    """Scrape a project page then ask the LLM to extract structured project metadata."""
+    api_key = os.getenv("OPENROUTER_API_KEY", "")
+    if not api_key:
+        raise ValueError("OPENROUTER_API_KEY not set in .env — cannot call LLM.")
+
+    page_text = _scrape_page_text(url)
+
+    client = OpenAI(
+        api_key=api_key,
+        base_url="https://openrouter.ai/api/v1",
+    )
+
+    prompt = f"""You are a project metadata extractor. Read the following webpage text about an architecture or urban design project and return ONLY a valid JSON object with these fields:
+
+- name: project name (string)
+- location: city and country (string, e.g. "Copenhagen, Denmark")
+- year_range: [start_year, end_year] as integers (array of two ints)
+- lead_firm: the main architecture/design firm (string)
+- consultants: list of consultant firms or collaborators mentioned (array of strings)
+- authorities: client or municipal authorities mentioned (array of strings)
+- notes: a concise 1-2 sentence description of what the project is (string)
+
+If a field is not found, use null for scalars and [] for arrays.
+Return ONLY the JSON object, no markdown, no explanation.
+
+Webpage text:
+{page_text}"""
+
+    response = client.chat.completions.create(
+        model="google/gemini-2.0-flash-001",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0,
+    )
+
+    raw = response.choices[0].message.content.strip()
+    # Strip markdown fences if present
+    raw = re.sub(r"^```[a-z]*\n?", "", raw, flags=re.IGNORECASE)
+    raw = re.sub(r"\n?```$", "", raw)
+
+    result = json.loads(raw)
+
+    # Normalise types
+    inferred: dict = {}
+    if result.get("name"):
+        inferred["name"] = str(result["name"])
+    if result.get("location"):
+        inferred["location"] = str(result["location"])
+    yr = result.get("year_range")
+    if isinstance(yr, list) and len(yr) == 2 and all(isinstance(y, int) for y in yr):
+        inferred["year_range"] = yr
+    if result.get("lead_firm"):
+        inferred["lead_firm"] = str(result["lead_firm"])
+    if isinstance(result.get("consultants"), list):
+        inferred["consultants"] = [str(c) for c in result["consultants"] if c]
+    if isinstance(result.get("authorities"), list):
+        inferred["authorities"] = [str(a) for a in result["authorities"] if a]
+    if result.get("notes"):
+        inferred["notes"] = str(result["notes"])
+
+    return inferred
+
 # ── Display banner ─────────────────────────────────────────────────────────
 try:
     if PIC_PATH.exists():
@@ -66,11 +170,50 @@ st.divider()
 config = load_config()
 
 # ── Tabs for different config sections ─────────────────────────────────────
-tab1, tab2, tab3, tab4 = st.tabs(["📋 Project", "📂 Paths", "⚡ Processing", "🎨 Dashboard"])
+tab1, tab2, tab3 = st.tabs(["📋 Project", "⚙️ Settings", "🗂️ Taxonomy"])
 
 # ── TAB 1: Project Info ────────────────────────────────────────────────────
 with tab1:
     st.subheader("Project Information")
+
+    with st.expander("🌐 Auto-fill Project from URL", expanded=False):
+        project_url = st.text_input(
+            "Project URL",
+            value="",
+            placeholder="https://example.com/project-page",
+            help="Paste a project webpage. The app will infer metadata and write into Project fields."
+        )
+        if st.button("✨ Auto-fill from URL", key="autofill_from_url", use_container_width=True):
+            if not project_url.strip():
+                st.warning("Please paste a valid URL first.")
+            else:
+                try:
+                    inferred = infer_project_config_from_url(project_url.strip())
+                    existing_project = config.get("project", {})
+
+                    # Merge inferred values with existing values
+                    merged_project = existing_project.copy()
+                    for key in ["name", "location", "lead_firm", "notes", "year_range"]:
+                        val = inferred.get(key)
+                        if val:
+                            merged_project[key] = val
+
+                    existing_consultants = set(existing_project.get("consultants", []))
+                    inferred_consultants = set(inferred.get("consultants", []))
+                    if inferred_consultants:
+                        merged_project["consultants"] = sorted(existing_consultants | inferred_consultants)
+
+                    existing_authorities = set(existing_project.get("authorities", []))
+                    inferred_authorities = set(inferred.get("authorities", []))
+                    if inferred_authorities:
+                        merged_project["authorities"] = sorted(existing_authorities | inferred_authorities)
+
+                    config["project"] = merged_project
+                    save_config(config)
+                    st.info("Auto-filled project fields from URL. Review values below and click Save if needed.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Could not auto-fill from URL: {e}")
     
     col1, col2 = st.columns(2)
     
@@ -134,12 +277,69 @@ with tab1:
         help="Additional project information",
         height=80
     )
-    
-    drawing_code = st.text_input(
-        "Drawing Code Format",
-        value=project.get("drawing_code", ""),
-        help="e.g., FLB-[FIRM]-[PHASE]-[DISCIPLINE]-[TYPE]-[NUMBER]"
-    )
+
+    st.divider()
+    st.subheader("Project Paths")
+    paths = config.get("paths", {})
+    output_csv_path = Path(paths.get("output_csv", "test_output.csv"))
+    output_dir_default = "" if str(output_csv_path.parent) == "." else str(output_csv_path.parent)
+
+    if "input_dir_value" not in st.session_state:
+        st.session_state["input_dir_value"] = paths.get("input_dir", "")
+    if "output_dir_value" not in st.session_state:
+        st.session_state["output_dir_value"] = output_dir_default
+    if "output_name_value" not in st.session_state:
+        st.session_state["output_name_value"] = output_csv_path.name or "test_output.csv"
+
+    p1, p2 = st.columns(2)
+    with p1:
+        input_dir = st.text_input(
+            "Input Directory",
+            key="input_dir_value",
+            help="Folder containing files to process"
+        )
+        if st.button("📂 Choose Input Folder", key="pick_input_dir", use_container_width=True):
+            selected_dir = choose_directory_mac("Choose the input directory for processing")
+            if selected_dir:
+                st.session_state["input_dir_value"] = selected_dir.rstrip("/")
+                st.rerun()
+            else:
+                st.info("No folder selected.")
+    with p2:
+        output_dir = st.text_input(
+            "Output Folder",
+            key="output_dir_value",
+            help="Folder where the results CSV will be saved"
+        )
+        if st.button("📁 Choose Output Folder", key="pick_output_dir", use_container_width=True):
+            selected_dir = choose_directory_mac("Choose the output folder for results")
+            if selected_dir:
+                st.session_state["output_dir_value"] = selected_dir.rstrip("/")
+                st.rerun()
+            else:
+                st.info("No folder selected.")
+
+        output_name = st.text_input(
+            "Output CSV Filename",
+            key="output_name_value",
+            help="CSV filename, for example test_output.csv"
+        )
+
+    output_csv = str(Path(output_dir).expanduser() / output_name) if output_dir else output_name
+    st.caption(f"Result path: {output_csv}")
+
+    b1, b2 = st.columns(2)
+    with b2:
+        if st.button("📁 Reveal Output Folder in Finder", key="open_output_dir", use_container_width=True):
+            try:
+                target = Path(output_dir).expanduser() if output_dir else None
+                if target and target.exists():
+                    subprocess.Popen(["open", str(target)])
+                    st.success(f"Opened in Finder: {target}")
+                else:
+                    st.warning("Output folder does not exist yet. It will be created on first run.")
+            except Exception as e:
+                st.error(f"Could not open: {e}")
     
     # Save button
     if st.button("💾 Save Project Info", key="save_project", use_container_width=True):
@@ -150,65 +350,34 @@ with tab1:
             "lead_firm": lead_firm,
             "consultants": [c.strip() for c in consultants_str.split(",") if c.strip()],
             "authorities": [a.strip() for a in authorities_str.split(",") if a.strip()],
-            "drawing_code": drawing_code,
             "notes": notes,
         }
-        save_config(config)
-
-# ── TAB 2: Paths ───────────────────────────────────────────────────────────
-with tab2:
-    st.subheader("File Paths")
-    
-    paths = config.get("paths", {})
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.info("💡 Use `~` for home directory or full absolute paths")
-        input_dir = st.text_input(
-            "Input Directory",
-            value=paths.get("input_dir", ""),
-            help="Folder containing files to process"
-        )
-    
-    with col2:
-        output_csv = st.text_input(
-            "Output CSV File",
-            value=paths.get("output_csv", ""),
-            help="Where to save results"
-        )
-    
-    if st.button("💾 Save Paths", key="save_paths", use_container_width=True):
         config["paths"] = {
             "input_dir": input_dir,
             "output_csv": output_csv,
         }
         save_config(config)
 
-# ── TAB 3: Processing ──────────────────────────────────────────────────────
-with tab3:
-    st.subheader("Processing Settings")
-    
+# ── TAB 2: Settings (Processing + age thresholds) ─────────────────────────
+with tab2:
     processing = config.get("processing", {})
-    
+    age_analysis = config.get("age_analysis", {})
+
     col1, col2 = st.columns(2)
-    
     with col1:
         sample_n = st.slider(
             "Files to Process",
             min_value=10,
             max_value=5000,
-            value=processing.get("sample_n", 20),
+            value=processing.get("sample_n") or 20,
             step=10,
-            help="Number of files to sample (null = all)"
+            help="Number of files to sample"
         )
-        
         use_all = st.checkbox(
             "Process ALL files",
             value=processing.get("sample_n") is None,
-            help="Uncheck to use the slider value above"
         )
-    
+
     with col2:
         models = [
             "google/gemini-2.0-flash-001",
@@ -217,102 +386,91 @@ with tab3:
             "anthropic/claude-3-opus",
             "openai/gpt-4-turbo",
         ]
-        
         model = st.selectbox(
             "LLM Model",
             options=models,
             index=models.index(processing.get("model", "google/gemini-2.0-flash-001")),
-            help="Choose the language model for classification"
         )
-    
-    st.divider()
-    st.subheader("🎯 Advanced Options")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        parallel_workers = st.slider(
-            "Parallel Workers",
-            min_value=1,
-            max_value=16,
-            value=processing.get("parallel_workers", 1),
-            step=1,
-            help="Number of concurrent processes (1 = serial)"
-        )
-    
-    with col2:
-        api_timeout = st.number_input(
-            "API Timeout (seconds)",
-            min_value=10,
-            max_value=300,
-            value=processing.get("api_timeout", 30),
-            step=10,
-            help="How long to wait for LLM response"
-        )
-    
-    if st.button("💾 Save Processing Settings", key="save_processing", use_container_width=True):
+
+    with st.expander("🔧 Advanced", expanded=False):
+        a1, a2, a3 = st.columns(3)
+        with a1:
+            parallel_workers = st.slider("Parallel Workers", 1, 16,
+                value=processing.get("parallel_workers", 16), step=1)
+        with a2:
+            api_timeout = st.number_input("API Timeout (s)", 10, 300,
+                value=processing.get("api_timeout", 30), step=10)
+        with a3:
+            warn_predates = st.number_input("Warn Predates (yrs)", 0, 100,
+                value=age_analysis.get("warn_predates_years", 10))
+
+    if st.button("💾 Save Settings", key="save_settings", use_container_width=True):
         config["processing"] = {
             "sample_n": None if use_all else sample_n,
             "model": model,
             "parallel_workers": parallel_workers,
             "api_timeout": api_timeout,
         }
-        save_config(config)
-
-# ── TAB 4: Dashboard & Analysis ────────────────────────────────────────────
-with tab4:
-    st.subheader("Dashboard Settings")
-    
-    dashboard = config.get("dashboard", {})
-    age_analysis = config.get("age_analysis", {})
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        port = st.number_input(
-            "Dashboard Port",
-            min_value=1024,
-            max_value=65535,
-            value=dashboard.get("port", 8502),
-            step=1,
-            help="Port number (default 8502)"
-        )
-        
-        auto_launch = st.checkbox(
-            "Auto-launch Browser",
-            value=dashboard.get("auto_launch", True),
-            help="Automatically open dashboard in browser"
-        )
-    
-    with col2:
-        warn_predates = st.number_input(
-            "Warn if Predates (years)",
-            min_value=0,
-            max_value=100,
-            value=age_analysis.get("warn_predates_years", 10),
-            step=1,
-            help="Flag files older than N years before project"
-        )
-        
-        warn_postproject = st.number_input(
-            "Warn if After Project (years)",
-            min_value=0,
-            max_value=100,
-            value=age_analysis.get("warn_postproject_years", 3),
-            step=1,
-            help="Flag files N years after project end"
-        )
-    
-    if st.button("💾 Save Dashboard Settings", key="save_dashboard", use_container_width=True):
-        config["dashboard"] = {
-            "port": int(port),
-            "auto_launch": auto_launch,
-        }
         config["age_analysis"] = {
             "warn_predates_years": int(warn_predates),
-            "warn_postproject_years": int(warn_postproject),
+            "warn_postproject_years": age_analysis.get("warn_postproject_years", 3),
         }
         save_config(config)
+
+# ── Footer ─────────────────────────────────────────────────────────────────
+# ── TAB 3: Taxonomy Editor ─────────────────────────────────────────────────
+with tab3:
+    import pandas as pd
+    from config_loader import load_taxonomy, save_taxonomy
+
+    TAXONOMY_PATH = Path("taxonomy.yaml")
+
+    @st.cache_data
+    def _load_tax():
+        from config_loader import load_taxonomy as _lt
+        return _lt()
+
+    taxonomy_data = _load_tax()
+
+    st.caption(
+        "Define the classification options injected into the LLM prompt. "
+        "Add, rename, or remove rows — changes apply on the next pipeline run."
+    )
+
+    SECTIONS = [
+        ("domains",               "📁 Domains",               "Name your project's subject areas."),
+        ("scales",                "🗺️ Scales",                "Geographic scope levels."),
+        ("lifecycle_stages",      "📅 Lifecycle Stages",      "Design phase names used in your office."),
+        ("confidentiality_levels","🔐 Confidentiality Levels","Access / sensitivity tiers."),
+    ]
+
+    edited_taxonomy = {}
+    for key, label, hint in SECTIONS:
+        st.subheader(label)
+        st.caption(hint)
+        items = taxonomy_data.get(key, [])
+        df = pd.DataFrame(items) if items else pd.DataFrame(columns=["name", "description"])
+        edited_df = st.data_editor(
+            df,
+            num_rows="dynamic",
+            use_container_width=True,
+            key=f"tax_{key}",
+            column_config={
+                "name":        st.column_config.TextColumn("Name",        width="medium"),
+                "description": st.column_config.TextColumn("Description", width="large"),
+            },
+        )
+        edited_taxonomy[key] = (
+            edited_df.dropna(subset=["name"])
+                     .where(edited_df.notna(), other=None)
+                     .to_dict("records")
+        )
+
+    st.divider()
+    if st.button("💾 Save Taxonomy", key="save_taxonomy_btn", use_container_width=True, type="primary"):
+        save_taxonomy(edited_taxonomy)
+        st.cache_data.clear()
+        st.success("✅ Taxonomy saved to taxonomy.yaml — changes apply on next pipeline run.")
 
 # ── Footer ─────────────────────────────────────────────────────────────────
 st.divider()
@@ -334,35 +492,27 @@ with col3:
 st.divider()
 
 # ── Run Pipeline Section ───────────────────────────────────────────────────
-st.subheader("🚀 Run Pipeline")
-st.caption("Process files with current configuration")
+st.divider()
 
 config = load_config()
-parallel_workers = config.get("processing", {}).get("parallel_workers", 1)
+parallel_workers = config.get("processing", {}).get("parallel_workers", 16)
 sample_n = config.get("processing", {}).get("sample_n", 20)
 
-col_run1, col_run2 = st.columns(2)
+st.markdown("""
+<style>
+    div[data-testid="stButton"] > button[kind="secondary"].run-btn {
+        height: 3.5rem; font-size: 1.3rem;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-with col_run1:
-    st.metric("📊 Parallel Workers", f"{parallel_workers} processes")
-
-with col_run2:
-    no_dashboard = st.checkbox(
-        "Skip Dashboard Launch",
-        value=False,
-        help="Don't launch dashboard after processing"
-    )
-
-# Run button
-if st.button("▶️ START PROCESSING", use_container_width=True, key="run_button"):
+if st.button("▶️  START PROCESSING", use_container_width=True, key="run_button", type="primary"):
     st.divider()
     
     st.write(f"📊 Running pipeline with **{parallel_workers}** parallel worker(s)...")
     
     # Build command
     cmd = ["python", "main.py", f"--parallel", str(parallel_workers)]
-    if no_dashboard:
-        cmd.append("--no-dashboard")
     
     # Progress tracking
     progress_bar = st.progress(0)

@@ -9,7 +9,6 @@ import streamlit as st
 import plotly.express as px
 from pathlib import Path
 import subprocess
-import os
 
 st.set_page_config(
     page_title = "Urban Asset Classifier — Dashboard",
@@ -32,510 +31,6 @@ st.markdown("""
 
 CSV_PATH = Path("test_output.csv")
 
-# Sample data for demo purposes when CSV is not available
-SAMPLE_DATA = [
-    {
-        "filename": "Project_Brief_2024.pdf",
-        "format": "PDF", 
-        "file_path": "/sample/project/Project_Brief_2024.pdf",
-        "size_kb": 245,
-        "extraction_coverage": "3/3 pages sampled",
-        "is_data_hint": "Unlikely",
-        "information_type": "Narrative / Textual",
-        "domain": "Architecture & Buildings",
-        "scale": "Building / Complex", 
-        "lifecycle": "Concept Design",
-        "asset_type": "Document",
-        "governance": "Internal",
-        "confidentiality": "Standard",
-        "confidence": "High",
-        "age_warning": "",
-        "review_priority": "High",
-        "action": "Auto-process",
-        "review_reasons": "",
-        "year": 2024,
-        "short_summary": "Architectural project brief outlining design requirements and constraints.",
-        "_reasoning": "Project brief document for architecture project.",
-        "llm_status": "",
-        "processed_at": "2026-03-05 12:00"
-    },
-    {
-        "filename": "Site_Analysis.dwg", 
-        "format": "DWG",
-        "file_path": "/sample/project/Site_Analysis.dwg", 
-        "size_kb": 1250,
-        "extraction_coverage": "filename analysis only",
-        "is_data_hint": "Likely",
-        "information_type": "Spatial / Cartographic",
-        "domain": "Urban Planning & Massing",
-        "scale": "City / Municipal",
-        "lifecycle": "Schematic Design", 
-        "asset_type": "Data",
-        "governance": "Internal",
-        "confidentiality": "Standard",
-        "confidence": "Medium",
-        "age_warning": "",
-        "review_priority": "Medium",
-        "action": "Auto-process",
-        "review_reasons": "",
-        "year": 2024,
-        "short_summary": "CAD drawing showing site analysis and urban context.",
-        "_reasoning": "CAD file containing spatial data for urban planning.",
-        "llm_status": "",
-        "processed_at": "2026-03-05 12:01"
-    },
-    {
-        "filename": "Budget_Estimates.xlsx",
-        "format": "XLSX", 
-        "file_path": "/sample/project/Budget_Estimates.xlsx",
-        "size_kb": 89,
-        "extraction_coverage": "5/5 sheets sampled",
-        "is_data_hint": "Likely",
-        "information_type": "Quantitative / Numerical",
-        "domain": "Project Management", 
-        "scale": "Non-spatial",
-        "lifecycle": "Design Development",
-        "asset_type": "Data", 
-        "governance": "Internal",
-        "confidentiality": "Confidential",
-        "confidence": "High",
-        "age_warning": "",
-        "review_priority": "Critical", 
-        "action": "Manual review",
-        "review_reasons": "Contains budget information",
-        "year": 2024,
-        "short_summary": "Project budget estimates and cost breakdown.",
-        "_reasoning": "Financial data requiring confidential handling.",
-        "llm_status": "",
-        "processed_at": "2026-03-05 12:02"
-    },
-    {
-        "filename": "Environmental_Impact.pdf",
-        "format": "PDF",
-        "file_path": "/sample/project/Environmental_Impact.pdf", 
-        "size_kb": 567,
-        "extraction_coverage": "8/12 pages sampled",
-        "is_data_hint": "Unlikely",
-        "information_type": "Narrative / Textual",
-        "domain": "Environment & Climate",
-        "scale": "City / Municipal",
-        "lifecycle": "Design Development",
-        "asset_type": "Document", 
-        "governance": "External",
-        "confidentiality": "Standard",
-        "confidence": "High",
-        "age_warning": "",
-        "review_priority": "High",
-        "action": "Auto-process",
-        "review_reasons": "",
-        "year": 2023,
-        "short_summary": "Environmental impact assessment for the development project.",
-        "_reasoning": "Environmental compliance document from external consultant.",
-        "llm_status": "",
-        "processed_at": "2026-03-05 12:03"
-    },
-    {
-        "filename": "Meeting_Notes_Dec2024.docx",
-        "format": "DOCX",
-        "file_path": "/sample/project/Meeting_Notes_Dec2024.docx",
-        "size_kb": 156,
-        "extraction_coverage": "full document sampled",
-        "is_data_hint": "Unlikely",
-        "information_type": "Narrative / Textual",
-        "domain": "Project Management",
-        "scale": "Non-spatial",
-        "lifecycle": "Design Development",
-        "asset_type": "Document",
-        "governance": "Internal",
-        "confidentiality": "Sensitive",
-        "confidence": "Medium",
-        "age_warning": "",
-        "review_priority": "Medium",
-        "action": "Auto-process",
-        "review_reasons": "",
-        "year": 2024,
-        "short_summary": "Client meeting notes and project decisions from December 2024.",
-        "_reasoning": "Internal meeting documentation with sensitive discussions.",
-        "llm_status": "",
-        "processed_at": "2026-03-05 12:04"
-    },
-    {
-        "filename": "Structural_Calcs.pdf",
-        "format": "PDF",
-        "file_path": "/sample/project/Structural_Calcs.pdf",
-        "size_kb": 892,
-        "extraction_coverage": "4/15 pages sampled",
-        "is_data_hint": "Likely",
-        "information_type": "Quantitative / Numerical",
-        "domain": "Architecture & Buildings",
-        "scale": "Building / Complex",
-        "lifecycle": "Design Development",
-        "asset_type": "Data",
-        "governance": "External",
-        "confidentiality": "Standard",
-        "confidence": "High",
-        "age_warning": "",
-        "review_priority": "Low",
-        "action": "Auto-process",
-        "review_reasons": "",
-        "year": 2024,
-        "short_summary": "Structural engineering calculations and analysis results.",
-        "_reasoning": "Technical calculations from structural engineer consultant.",
-        "llm_status": "",
-        "processed_at": "2026-03-05 12:05"
-    },
-    {
-        "filename": "Floor_Plans_A101.pdf",
-        "format": "PDF",
-        "file_path": "/sample/project/drawings/Floor_Plans_A101.pdf",
-        "size_kb": 1845,
-        "extraction_coverage": "2/2 pages sampled",
-        "is_data_hint": "Likely",
-        "information_type": "Spatial / Cartographic",
-        "domain": "Architecture & Buildings",
-        "scale": "Building / Complex",
-        "lifecycle": "Design Development",
-        "asset_type": "Data",
-        "governance": "Internal",
-        "confidentiality": "Standard",
-        "confidence": "High",
-        "age_warning": "",
-        "review_priority": "Medium",
-        "action": "Auto-process",
-        "review_reasons": "",
-        "year": 2024,
-        "short_summary": "Architectural floor plans for levels 1-3 with detailed room layouts.",
-        "_reasoning": "Technical drawings showing spatial arrangements.",
-        "llm_status": "",
-        "processed_at": "2026-03-05 12:06"
-    },
-    {
-        "filename": "Client_Contract_v3.docx",
-        "format": "DOCX",
-        "file_path": "/sample/project/legal/Client_Contract_v3.docx",
-        "size_kb": 234,
-        "extraction_coverage": "full document sampled",
-        "is_data_hint": "Unlikely",
-        "information_type": "Narrative / Textual",
-        "domain": "Project Management",
-        "scale": "Non-spatial",
-        "lifecycle": "Concept Design",
-        "asset_type": "Document",
-        "governance": "Internal",
-        "confidentiality": "Confidential",
-        "confidence": "High",
-        "age_warning": "",
-        "review_priority": "Critical",
-        "action": "Manual review",
-        "review_reasons": "Legal contract with confidential terms",
-        "year": 2024,
-        "short_summary": "Professional services agreement between firm and client.",
-        "_reasoning": "Legal document containing confidential contractual information.",
-        "llm_status": "",
-        "processed_at": "2026-03-05 12:07"
-    },
-    {
-        "filename": "Facade_Details_A301.dwg",
-        "format": "DWG",
-        "file_path": "/sample/project/drawings/Facade_Details_A301.dwg",
-        "size_kb": 3421,
-        "extraction_coverage": "filename analysis only",
-        "is_data_hint": "Likely",
-        "information_type": "Spatial / Cartographic",
-        "domain": "Architecture & Buildings",
-        "scale": "Component / Detail",
-        "lifecycle": "Design Development",
-        "asset_type": "Data",
-        "governance": "Internal",
-        "confidentiality": "Standard",
-        "confidence": "High",
-        "age_warning": "",
-        "review_priority": "Low",
-        "action": "Auto-process",
-        "review_reasons": "",
-        "year": 2024,
-        "short_summary": "Detailed facade construction drawings and material specifications.",
-        "_reasoning": "Technical CAD drawings for construction details.",
-        "llm_status": "",
-        "processed_at": "2026-03-05 12:08"
-    },
-    {
-        "filename": "Energy_Simulation.xlsx",
-        "format": "XLSX",
-        "file_path": "/sample/project/analysis/Energy_Simulation.xlsx",
-        "size_kb": 445,
-        "extraction_coverage": "3/8 sheets sampled",
-        "is_data_hint": "Likely",
-        "information_type": "Quantitative / Numerical",
-        "domain": "Environment & Climate",
-        "scale": "Building / Complex",
-        "lifecycle": "Schematic Design",
-        "asset_type": "Data",
-        "governance": "External",
-        "confidentiality": "Standard",
-        "confidence": "Medium",
-        "age_warning": "",
-        "review_priority": "Medium",
-        "action": "Auto-process",
-        "review_reasons": "",
-        "year": 2024,
-        "short_summary": "Building energy performance analysis and consumption projections.",
-        "_reasoning": "Technical analysis data from energy consultant.",
-        "llm_status": "",
-        "processed_at": "2026-03-05 12:09"
-    },
-    {
-        "filename": "Public_Consultation_Summary.pdf",
-        "format": "PDF",
-        "file_path": "/sample/project/reports/Public_Consultation_Summary.pdf",
-        "size_kb": 678,
-        "extraction_coverage": "6/10 pages sampled",
-        "is_data_hint": "Unlikely",
-        "information_type": "Narrative / Textual",
-        "domain": "Urban Planning & Massing",
-        "scale": "Neighborhood",
-        "lifecycle": "Concept Design",
-        "asset_type": "Document",
-        "governance": "External",
-        "confidentiality": "Standard",
-        "confidence": "High",
-        "age_warning": "",
-        "review_priority": "High",
-        "action": "Auto-process",
-        "review_reasons": "",
-        "year": 2023,
-        "short_summary": "Community feedback and recommendations from public engagement process.",
-        "_reasoning": "Public consultation documentation for planning approval.",
-        "llm_status": "",
-        "processed_at": "2026-03-05 12:10"
-    },
-    {
-        "filename": "Cost_Estimate_Phase2.pdf",
-        "format": "PDF",
-        "file_path": "/sample/project/estimates/Cost_Estimate_Phase2.pdf",
-        "size_kb": 123,
-        "extraction_coverage": "4/4 pages sampled",
-        "is_data_hint": "Likely",
-        "information_type": "Quantitative / Numerical",
-        "domain": "Project Management",
-        "scale": "Non-spatial",
-        "lifecycle": "Schematic Design",
-        "asset_type": "Document",
-        "governance": "External",
-        "confidentiality": "Confidential",
-        "confidence": "High",
-        "age_warning": "",
-        "review_priority": "Critical",
-        "action": "Manual review",
-        "review_reasons": "Contains detailed cost information",
-        "year": 2024,
-        "short_summary": "Construction cost estimates for Phase 2 development.",
-        "_reasoning": "Financial estimates requiring confidential handling.",
-        "llm_status": "",
-        "processed_at": "2026-03-05 12:11"
-    },
-    {
-        "filename": "Landscape_Masterplan.pdf",
-        "format": "PDF",
-        "file_path": "/sample/project/landscape/Landscape_Masterplan.pdf",
-        "size_kb": 2156,
-        "extraction_coverage": "3/5 pages sampled",
-        "is_data_hint": "Likely",
-        "information_type": "Spatial / Cartographic",
-        "domain": "Urban Planning & Massing",
-        "scale": "City / Municipal",
-        "lifecycle": "Schematic Design",
-        "asset_type": "Data",
-        "governance": "External",
-        "confidentiality": "Standard",
-        "confidence": "High",
-        "age_warning": "",
-        "review_priority": "Medium",
-        "action": "Auto-process",
-        "review_reasons": "",
-        "year": 2024,
-        "short_summary": "Comprehensive landscape design strategy and planting plans.",
-        "_reasoning": "Landscape architectural drawings from external consultant.",
-        "llm_status": "",
-        "processed_at": "2026-03-05 12:12"
-    },
-    {
-        "filename": "Fire_Safety_Report.docx",
-        "format": "DOCX",
-        "file_path": "/sample/project/reports/Fire_Safety_Report.docx",
-        "size_kb": 345,
-        "extraction_coverage": "full document sampled",
-        "is_data_hint": "Unlikely",
-        "information_type": "Narrative / Textual",
-        "domain": "Architecture & Buildings",
-        "scale": "Building / Complex",
-        "lifecycle": "Design Development",
-        "asset_type": "Document",
-        "governance": "External",
-        "confidentiality": "Standard",
-        "confidence": "High",
-        "age_warning": "",
-        "review_priority": "High",
-        "action": "Auto-process",
-        "review_reasons": "",
-        "year": 2024,
-        "short_summary": "Fire safety strategy and egress analysis for building compliance.",
-        "_reasoning": "Safety compliance report from fire engineering consultant.",
-        "llm_status": "",
-        "processed_at": "2026-03-05 12:13"
-    },
-    {
-        "filename": "Site_Survey_Data.dwg",
-        "format": "DWG",
-        "file_path": "/sample/project/survey/Site_Survey_Data.dwg",
-        "size_kb": 5678,
-        "extraction_coverage": "filename analysis only",
-        "is_data_hint": "Likely",
-        "information_type": "Spatial / Cartographic",
-        "domain": "Urban Planning & Massing",
-        "scale": "Neighborhood",
-        "lifecycle": "Concept Design",
-        "asset_type": "Data",
-        "governance": "External",
-        "confidentiality": "Standard",
-        "confidence": "High",
-        "age_warning": "",
-        "review_priority": "Low",
-        "action": "Auto-process",
-        "review_reasons": "",
-        "year": 2023,
-        "short_summary": "Topographic survey data and existing conditions mapping.",
-        "_reasoning": "Survey data providing baseline site information.",
-        "llm_status": "",
-        "processed_at": "2026-03-05 12:14"
-    },
-    {
-        "filename": "Design_Presentation_v4.pptx",
-        "format": "PPTX",
-        "file_path": "/sample/project/presentations/Design_Presentation_v4.pptx",
-        "size_kb": 12340,
-        "extraction_coverage": "8/24 slides sampled",
-        "is_data_hint": "Unlikely",
-        "information_type": "Mixed Media",
-        "domain": "Architecture & Buildings",
-        "scale": "Building / Complex",
-        "lifecycle": "Schematic Design",
-        "asset_type": "Document",
-        "governance": "Internal",
-        "confidentiality": "Sensitive",
-        "confidence": "Medium",
-        "age_warning": "",
-        "review_priority": "Medium",
-        "action": "Auto-process",
-        "review_reasons": "",
-        "year": 2024,
-        "short_summary": "Client design presentation with renderings and project overview.",
-        "_reasoning": "Presentation materials containing project visuals and strategy.",
-        "llm_status": "",
-        "processed_at": "2026-03-05 12:15"
-    },
-    {
-        "filename": "Parking_Analysis.xlsx",
-        "format": "XLSX",
-        "file_path": "/sample/project/analysis/Parking_Analysis.xlsx",
-        "size_kb": 67,
-        "extraction_coverage": "2/3 sheets sampled",
-        "is_data_hint": "Likely",
-        "information_type": "Quantitative / Numerical",
-        "domain": "Urban Planning & Massing",
-        "scale": "Building / Complex",
-        "lifecycle": "Design Development",
-        "asset_type": "Data",
-        "governance": "Internal",
-        "confidentiality": "Standard",
-        "confidence": "Medium",
-        "age_warning": "",
-        "review_priority": "Low",
-        "action": "Auto-process",
-        "review_reasons": "",
-        "year": 2024,
-        "short_summary": "Parking demand calculations and space allocation analysis.",
-        "_reasoning": "Transportation planning analysis with numerical data.",
-        "llm_status": "",
-        "processed_at": "2026-03-05 12:16"
-    },
-    {
-        "filename": "Permits_Application.pdf",
-        "format": "PDF",
-        "file_path": "/sample/project/permits/Permits_Application.pdf",
-        "size_kb": 234,
-        "extraction_coverage": "12/12 pages sampled",
-        "is_data_hint": "Unlikely",
-        "information_type": "Narrative / Textual",
-        "domain": "Project Management",
-        "scale": "Non-spatial",
-        "lifecycle": "Design Development",
-        "asset_type": "Document",
-        "governance": "External",
-        "confidentiality": "Standard",
-        "confidence": "High",
-        "age_warning": "",
-        "review_priority": "High",
-        "action": "Auto-process",
-        "review_reasons": "",
-        "year": 2024,
-        "short_summary": "Building permit application forms and supporting documentation.",
-        "_reasoning": "Official permit application for regulatory approval.",
-        "llm_status": "",
-        "processed_at": "2026-03-05 12:17"
-    },
-    {
-        "filename": "Material_Specs.docx",
-        "format": "DOCX",
-        "file_path": "/sample/project/specifications/Material_Specs.docx",
-        "size_kb": 189,
-        "extraction_coverage": "full document sampled",
-        "is_data_hint": "Unlikely",
-        "information_type": "Narrative / Textual",
-        "domain": "Architecture & Buildings",
-        "scale": "Component / Detail",
-        "lifecycle": "Design Development",
-        "asset_type": "Document",
-        "governance": "Internal",
-        "confidentiality": "Standard",
-        "confidence": "High",
-        "age_warning": "",
-        "review_priority": "Low",
-        "action": "Auto-process",
-        "review_reasons": "",
-        "year": 2024,
-        "short_summary": "Building material specifications and performance requirements.",
-        "_reasoning": "Technical specifications for construction materials.",
-        "llm_status": "",
-        "processed_at": "2026-03-05 12:18"
-    },
-    {
-        "filename": "Schedule_Gantt_2024.xlsx",
-        "format": "XLSX",
-        "file_path": "/sample/project/Schedule_Gantt_2024.xlsx",
-        "size_kb": 156,
-        "extraction_coverage": "4/6 sheets sampled",
-        "is_data_hint": "Likely",
-        "information_type": "Quantitative / Numerical",
-        "domain": "Project Management",
-        "scale": "Non-spatial",
-        "lifecycle": "Design Development",
-        "asset_type": "Data",
-        "governance": "Internal",
-        "confidentiality": "Sensitive",
-        "confidence": "Medium",
-        "age_warning": "",
-        "review_priority": "Medium",
-        "action": "Auto-process",
-        "review_reasons": "",
-        "year": 2024,
-        "short_summary": "Project timeline and milestone schedule for 2024 deliverables.",
-        "_reasoning": "Project management data with timeline information.",
-        "llm_status": "",
-        "processed_at": "2026-03-05 12:19"
-    }
-]
-
 @st.cache_data
 def load_data(path):
     try:
@@ -544,16 +39,11 @@ def load_data(path):
             df["year"] = pd.to_numeric(df["year"], errors="coerce")
             return df
         else:
-            # Use sample data for demo
-            st.info("📊 **Demo Mode**: Displaying sample data. Upload your own CSV file or run the pipeline locally to see real project data.")
-            df = pd.DataFrame(SAMPLE_DATA)
-            df["year"] = pd.to_numeric(df["year"], errors="coerce")
-            return df
+            st.error(f"CSV not found: {path}. Please run the pipeline first.")
+            st.stop()
     except Exception as e:
-        st.warning(f"Could not load CSV file: {e}. Using sample data instead.")
-        df = pd.DataFrame(SAMPLE_DATA)
-        df["year"] = pd.to_numeric(df["year"], errors="coerce")
-        return df
+        st.error(f"Could not load CSV file: {e}")
+        st.stop()
 
 # Load data (real or sample)
 df = load_data(CSV_PATH)
@@ -567,55 +57,52 @@ st.sidebar.header("Filters")
 all_domains    = sorted(df["domain"].dropna().unique())
 all_scales     = sorted(df["scale"].dropna().unique())
 all_lifecycles = sorted(df["lifecycle"].dropna().unique())
-all_risks      = sorted(df["review_priority"].dropna().unique())
 
 sel_domains    = st.sidebar.multiselect("Domain",     all_domains,    default=all_domains)
 sel_scales     = st.sidebar.multiselect("Scale",      all_scales,     default=all_scales)
 sel_lifecycles = st.sidebar.multiselect("Lifecycle",  all_lifecycles, default=all_lifecycles)
-sel_risks      = st.sidebar.multiselect("Review Priority", all_risks,      default=all_risks)
 
 filtered = df[
     df["domain"].isin(sel_domains) &
     df["scale"].isin(sel_scales) &
-    df["lifecycle"].isin(sel_lifecycles) &
-    df["review_priority"].isin(sel_risks)
+    df["lifecycle"].isin(sel_lifecycles)
 ]
 st.sidebar.caption(f"Showing **{len(filtered)}** of {len(df)} files")
+
+
+def explain_row_reason(row) -> str:
+    """Best-effort human explanation for why this file matters."""
+    for key in ("review_reasons", "short_summary", "action"):
+        val = row.get(key)
+        if pd.notna(val) and str(val).strip():
+            return str(val).strip()
+    return "No explicit reason provided by pipeline output."
+
+
+priority_need = pd.Series(False, index=filtered.index)
+action_need = pd.Series(False, index=filtered.index)
+
+if "review_priority" in filtered.columns:
+    priority_need = filtered["review_priority"].isin(["Critical", "High", "Urgent"])
+
+if "action" in filtered.columns:
+    action_need = filtered["action"].fillna("").str.contains(r"manual|review", case=False, regex=True)
+
+needs_review = filtered[priority_need | action_need].copy()
+if not needs_review.empty:
+    needs_review["reason"] = needs_review.apply(explain_row_reason, axis=1)
 
 # Pre-compute counts
 confidential_count = int((filtered["confidentiality"] == "Confidential").sum()) if "confidentiality" in filtered.columns else 0
 sensitive_count    = int((filtered["confidentiality"] == "Sensitive").sum())    if "confidentiality" in filtered.columns else 0
-data_count         = int((filtered["asset_type"] == "Data").sum())               if "asset_type" in filtered.columns else 0
-non_data_count     = len(filtered) - data_count
 
 # ROW 1: KPIs
-left_kpi, gap, right_kpi = st.columns([3, 0.1, 2])
-
-with left_kpi:
-    st.markdown('<div class="section-label">Overview</div>', unsafe_allow_html=True)
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total Files",   len(filtered))
-    c2.metric("Critical Review", int((filtered["review_priority"] == "Critical").sum()))
-    c3.metric("High Priority", int((filtered["review_priority"] == "High").sum()))
-    c4.metric("Medium/Low",    int((filtered["review_priority"].isin(["Medium", "Low"])).sum()))
-
-with right_kpi:
-    st.markdown('<div class="section-label">Priority Flags</div>', unsafe_allow_html=True)
-    conf_col, data_col = st.columns(2)
-    with conf_col:
-        st.metric("Confidential", confidential_count,
-                  delta=f"+{sensitive_count} Sensitive", delta_color="off",
-                  help="Confidential = contracts, fees, budgets, legal. Sensitive = drafts, memos, WIP.")
-        if confidential_count > 0:
-            pct = round(confidential_count / len(filtered) * 100) if len(filtered) else 0
-            st.caption(f"{pct}% need access control")
-    with data_col:
-        st.metric("Data Assets", data_count,
-                  delta=f"{non_data_count} non-data", delta_color="off",
-                  help="asset_type = Data — spreadsheets, GIS layers, datasets")
-        if data_count > 0:
-            pct = round(data_count / len(filtered) * 100) if len(filtered) else 0
-            st.caption(f"{pct}% are structured data")
+st.markdown('<div class="section-label">Decision Snapshot</div>', unsafe_allow_html=True)
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Total Files",   len(filtered))
+c2.metric("Need Human Review", len(needs_review))
+c3.metric("Confidential/Sensitive", confidential_count + sensitive_count)
+c4.metric("No Immediate Review", max(len(filtered) - len(needs_review), 0))
 
 st.divider()
 
@@ -624,30 +111,12 @@ col_data, col_conf = st.columns(2)
 
 with col_data:
     st.subheader("Data Assets")
-    st.caption("Which formats and domains contain structured data")
     if "asset_type" in filtered.columns:
-        data_files = filtered[filtered["asset_type"] == "Data"]
+        data_files = filtered[filtered["asset_type"] == "Data"].copy()
         if not data_files.empty:
-            tab1, tab2 = st.tabs(["By Format", "By Domain"])
-            with tab1:
-                fmt_counts = data_files["format"].value_counts().reset_index()
-                fmt_counts.columns = ["format", "count"]
-                fig_fmt = px.bar(fmt_counts, x="count", y="format", orientation="h",
-                                 color="count", color_continuous_scale="Blues",
-                                 labels={"count": "Files", "format": ""})
-                fig_fmt.update_layout(height=280, margin=dict(l=0,r=0,t=10,b=0), coloraxis_showscale=False)
-                st.plotly_chart(fig_fmt, use_container_width=True)
-            with tab2:
-                dom_counts = data_files["domain"].value_counts().reset_index()
-                dom_counts.columns = ["domain", "count"]
-                fig_dom = px.bar(dom_counts, x="count", y="domain", orientation="h",
-                                 color="count", color_continuous_scale="Blues",
-                                 labels={"count": "Files", "domain": ""})
-                fig_dom.update_layout(height=280, margin=dict(l=0,r=0,t=10,b=0), coloraxis_showscale=False)
-                st.plotly_chart(fig_dom, use_container_width=True)
-            with st.expander(f"View all {len(data_files)} data files"):
-                data_show = [c for c in ["filename","format","domain","lifecycle","year","short_summary"] if c in data_files.columns]
-                st.dataframe(data_files[data_show], use_container_width=True, height=250)
+            with st.expander("Show detailed data-file explanations"):
+                detail_cols = [c for c in ["filename", "domain", "lifecycle", "format", "short_summary", "review_priority", "year"] if c in data_files.columns]
+                st.dataframe(data_files[detail_cols], use_container_width=True, height=260)
         else:
             st.info("No Data assets detected in current filter.")
     else:
@@ -655,36 +124,18 @@ with col_data:
 
 with col_conf:
     st.subheader("Confidentiality")
-    st.caption("Sensitive and confidential files by domain")
     if "confidentiality" in filtered.columns:
-        conf_colors = {"Confidential": "#e53e3e", "Sensitive": "#ed8936", "Standard": "#48bb78"}
-        conf_order  = ["Confidential", "Sensitive", "Standard"]
-        conf_domain = filtered.groupby(["domain","confidentiality"]).size().reset_index(name="count")
-        if not conf_domain.empty:
-            priority_order = (
-                filtered[filtered["confidentiality"].isin(["Confidential","Sensitive"])]
-                .groupby("domain").size().sort_values(ascending=True).index.tolist()
-            )
-            remaining    = [d for d in filtered["domain"].unique() if d not in priority_order]
-            domain_order = remaining + priority_order
-            fig_conf = px.bar(conf_domain, x="count", y="domain", color="confidentiality",
-                              orientation="h", color_discrete_map=conf_colors,
-                              category_orders={"confidentiality": conf_order, "domain": domain_order},
-                              labels={"count": "Files", "domain": "", "confidentiality": ""})
-            fig_conf.update_layout(height=300, margin=dict(l=0,r=0,t=10,b=0),
-                                   legend=dict(orientation="h", yanchor="bottom", y=1.02))
-            st.plotly_chart(fig_conf, use_container_width=True)
-        conf_files = filtered[filtered["confidentiality"] == "Confidential"]
-        sens_files = filtered[filtered["confidentiality"] == "Sensitive"]
-        if not conf_files.empty:
-            with st.expander(f"🔴 {len(conf_files)} Confidential files — review required"):
-                conf_show = [c for c in ["filename","domain","lifecycle","action","year"] if c in conf_files.columns]
-                st.dataframe(conf_files[conf_show], use_container_width=True, height=220)
-        if not sens_files.empty:
-            with st.expander(f"🟠 {len(sens_files)} Sensitive files"):
-                sens_show = [c for c in ["filename","domain","lifecycle","year"] if c in sens_files.columns]
-                st.dataframe(sens_files[sens_show], use_container_width=True, height=220)
-        if conf_files.empty and sens_files.empty:
+        flagged = filtered[filtered["confidentiality"].isin(["Confidential", "Sensitive"])].copy()
+        if not flagged.empty:
+            flagged["reason"] = flagged.apply(explain_row_reason, axis=1)
+            conf_rank = {"Confidential": 0, "Sensitive": 1}
+            flagged["_rank"] = flagged["confidentiality"].map(conf_rank).fillna(9)
+            flagged = flagged.sort_values(["_rank", "review_priority", "domain"], ascending=[True, True, True])
+
+            overview_cols = [c for c in ["filename", "confidentiality", "review_priority", "domain", "reason"] if c in flagged.columns]
+            st.markdown("**Files needing access attention**")
+            st.dataframe(flagged[overview_cols], use_container_width=True, height=260)
+        else:
             st.success("No confidential or sensitive files in current filter.")
     else:
         st.warning("confidentiality column not found — re-run the pipeline.")
@@ -731,7 +182,7 @@ with col2:
 
 st.divider()
 
-# ROW 4: Timeline + Priority Breakdown
+# ROW 4: Timeline + Needs-Review list
 col3, col4 = st.columns([2, 1])
 
 with col3:
@@ -755,32 +206,14 @@ with col3:
         st.info("No year data available.")
 
 with col4:
-    st.subheader("Review Priority")
-    st.caption("By domain")
-    risk_domain = filtered.groupby(["domain","review_priority"]).size().reset_index(name="count")
-    risk_color  = {"Critical":"#c92a2a","Urgent":"#c92a2a","High":"#e74c3c","Medium":"#f39c12","Low":"#2ecc71"}
-    if not risk_domain.empty:
-        fig_risk = px.bar(risk_domain, x="count", y="domain", color="review_priority",
-                          orientation="h", color_discrete_map=risk_color,
-                          labels={"count":"Files","domain":"","review_priority":"Priority"})
-        fig_risk.update_layout(margin=dict(l=0,r=0,t=30,b=0), height=350,
-                               legend=dict(orientation="h", yanchor="bottom", y=1.02))
-        st.plotly_chart(fig_risk, use_container_width=True)
+    st.subheader("Needs Review")
+    if not needs_review.empty:
+        review_cols = [c for c in ["filename", "domain", "lifecycle", "review_priority", "reason"] if c in needs_review.columns]
+        st.dataframe(needs_review[review_cols], use_container_width=True, height=350)
     else:
-        st.info("No data to display.")
+        st.success("No files currently flagged for review in this filter.")
 
 st.divider()
-
-# ROW 5: Full file table
-st.subheader("File List")
-show_cols = ["filename","file_path","domain","scale","lifecycle","asset_type","confidentiality",
-             "governance","review_priority","confidence","year","short_summary"]
-show_cols = [c for c in show_cols if c in filtered.columns]
-
-priority_emoji = {"Critical":"🔴","Urgent":"🔴","High":"🟠","Medium":"🟡","Low":"🟢"}
-conf_emoji = {"Confidential":"🔒","Sensitive":"🟠","Standard":""}
-
-display_df = filtered[show_cols].copy()
 
 # Quick file actions
 st.subheader("📂 File Explorer")
@@ -788,13 +221,22 @@ st.caption("Select a file and open its folder location")
 
 col1, col2 = st.columns(2)
 
+file_options = []
+if len(filtered) > 0 and "filename" in filtered.columns:
+    file_options = [str(x) for x in filtered["filename"].dropna().tolist()]
+    # Deduplicate while preserving order
+    file_options = list(dict.fromkeys(file_options))
+
 with col1:
-    selected_file = st.selectbox(
-        "Select a file",
-        options=filtered["filename"].tolist() if len(filtered) > 0 else [],
-        index=None,
-        placeholder="Choose a file..."
-    )
+    if not file_options:
+        st.warning("当前筛选结果没有文件可检阅。请先调整左侧 Filters。")
+        selected_file = None
+    else:
+        selected_file = st.selectbox(
+            "Select a file",
+            options=file_options,
+            index=0,
+        )
     
     if selected_file:
         file_info = filtered[filtered["filename"] == selected_file].iloc[0]
@@ -828,6 +270,8 @@ with col2:
         st.caption(f"**Size:** {file_info.get('size_kb', '—')} KB")
         st.caption(f"**Type:** {file_info.get('format', '—')}")
         st.caption(f"**Priority:** {file_info.get('review_priority', '—')}")
+    else:
+        st.info("请选择一个文件查看详情。")
 
 st.divider()
 
