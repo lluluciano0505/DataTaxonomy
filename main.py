@@ -33,7 +33,8 @@ def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(description="DataTaxonomy Pipeline")
     parser.add_argument("--config", default="config.yaml", help="Path to config.yaml")
-    parser.add_argument("--parallel", type=int, default=1, help="Number of parallel workers (1=serial, >1=parallel)")
+    parser.add_argument("--parallel", type=int, default=0, help="Number of parallel workers (1=serial, >1=parallel). 0 = use config value")
+    parser.add_argument("--no-dashboard", action="store_true", help="Run processing only, do not launch dashboard")
     args = parser.parse_args()
     
     # ── Load configuration ────────────────────────────────────────────────
@@ -47,6 +48,7 @@ def main():
     paths = get_paths_config(config)
     processing = get_processing_config(config)
     dashboard_cfg = get_dashboard_config(config)
+    effective_parallel = args.parallel if args.parallel and args.parallel > 0 else int(processing.get("parallel_workers", 1))
     
     # Override model if set in environment
     if "MODEL" in os.environ:
@@ -64,11 +66,16 @@ def main():
     print(f"📍 Project: {project['name']} ({project['location']})")
     print(f"📂 Input: {paths['input_dir'].name}")
     print(f"📊 Files to process: {processing.get('sample_n') or 'all'}")
+    print(f"⚙️  Parallel workers: {effective_parallel}")
     print("="*70 + "\n")
     
-    if not process_data(paths, project, processing, API_KEY, args.parallel):
+    if not process_data(paths, project, processing, API_KEY, effective_parallel):
         print("⚠️ Data processing failed. Skipping dashboard.")
         sys.exit(1)
+
+    if args.no_dashboard:
+        print("✅ Processing finished (--no-dashboard).")
+        return
     
     # ── Step 2: Launch Dashboard ──────────────────────────────────────────
     try:
@@ -84,7 +91,12 @@ def process_data(paths: dict, project: dict, processing: dict, api_key: str, par
     print("📊 STEP 1: Processing Files...")
     print("-" * 70)
     
-    config = build_config(project=project, model=processing["model"], api_key=api_key)
+    config = build_config(
+        project=project,
+        model=processing["model"],
+        api_key=api_key,
+        api_timeout=int(processing.get("api_timeout", 30)),
+    )
     config["taxonomy"] = load_taxonomy()
     
     try:

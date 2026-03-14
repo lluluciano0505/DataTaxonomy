@@ -2,6 +2,7 @@ import os
 import csv
 import time
 import random
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -36,7 +37,7 @@ FIELDNAMES = [
 
 
 # ── Config loader — reads from env or explicit dict ───────────────────────
-def build_config(project: dict, model: str, api_key: str) -> dict:
+def build_config(project: dict, model: str, api_key: str, api_timeout: int = 30) -> dict:
     """
     Packages everything the pipeline needs into a single config dict.
     Use this instead of relying on notebook globals.
@@ -68,9 +69,26 @@ def build_config(project: dict, model: str, api_key: str) -> dict:
         "model":           model,
         "api_key":         api_key,
         "base_url":        "https://openrouter.ai/api/v1",
+        "api_timeout":     int(api_timeout),
         "temperature":     0,
         "delay":           0.3,
     }
+
+
+_THREAD_LOCAL = threading.local()
+
+
+def _get_thread_client(config: dict) -> OpenAI:
+    """Create/reuse one OpenAI client per worker thread (safer than sharing one client across threads)."""
+    client = getattr(_THREAD_LOCAL, "client", None)
+    if client is None:
+        client = OpenAI(
+            api_key=config["api_key"],
+            base_url=config["base_url"],
+            timeout=int(config.get("api_timeout", 30)),
+        )
+        _THREAD_LOCAL.client = client
+    return client
 
 
 # ── Single file processor ─────────────────────────────────────────────────
@@ -95,6 +113,7 @@ def process_file(file_path: Path, client: OpenAI, config: dict, input_path: Opti
         project_context = config["project_context"],
         temperature     = config["temperature"],
         taxonomy        = config.get("taxonomy"),
+        api_timeout     = int(config.get("api_timeout", 30)),
     )
 
     l3 = layer3_trust(
@@ -145,8 +164,9 @@ def process_file_safe(args: tuple) -> tuple:
     Wrapper to process a file safely within a thread pool.
     Returns (file_path, result_row, error, is_success)
     """
-    fp, client, config = args
+    fp, config = args
     try:
+        client = _get_thread_client(config)
         row = process_file(fp, client, config)
         return (fp, row, None, True)
     except Exception as e:
@@ -187,7 +207,11 @@ def run(
         scope_label = f"ALL {len(all_files)}"
 
     # ── LLM client ────────────────────────────────────────────────────────
-    client = OpenAI(api_key=config["api_key"], base_url=config["base_url"])
+    client = OpenAI(
+        api_key=config["api_key"],
+        base_url=config["base_url"],
+        timeout=int(config.get("api_timeout", 30)),
+    )
 
     print(f"""
 =================================================================
@@ -213,7 +237,7 @@ def run(
             # ── PARALLEL MODE ─────────────────────────────────────────────
             with ThreadPoolExecutor(max_workers=parallel) as executor:
                 futures = [
-                    executor.submit(process_file_safe, (fp, client, config))
+                    executor.submit(process_file_safe, (fp, config))
                     for fp in files
                 ]
                 

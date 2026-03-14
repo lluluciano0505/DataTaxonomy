@@ -769,6 +769,7 @@ def layer2_domain(
     project_context: str,
     temperature: float = 0,
     taxonomy: dict = None,
+  api_timeout: int = 30,
 ) -> dict:
     """
     Classify a file using the LLM.
@@ -867,6 +868,7 @@ def layer2_domain(
             ],
             temperature     = temp,
             response_format = {"type": "json_object"},
+            timeout         = int(api_timeout),
         )
         raw = resp.choices[0].message.content
 

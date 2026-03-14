@@ -66,6 +66,8 @@ def get_processing_config(config: dict) -> dict:
     return {
         "sample_n": sample_n,
         "model": model,
+        "parallel_workers": int(proc.get("parallel_workers", 1)),
+        "api_timeout": int(proc.get("api_timeout", 30)),
     }
 
 

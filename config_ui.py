@@ -529,8 +529,8 @@ if st.button("▶️  START PROCESSING", use_container_width=True, key="run_butt
     
     st.write(f"📊 Running pipeline with **{parallel_workers}** parallel worker(s)...")
     
-    # Build command
-    cmd = ["python", "main.py", f"--parallel", str(parallel_workers)]
+    # Build command (processing only; do not block by launching dashboard)
+    cmd = ["python", "-u", "main.py", "--no-dashboard", "--parallel", str(parallel_workers)]
     
     # Progress tracking
     progress_bar = st.progress(0)
@@ -553,30 +553,29 @@ if st.button("▶️  START PROCESSING", use_container_width=True, key="run_butt
         
         output_lines = []
         file_count = 0
+        total_files = sample_n or 0
         
         # Read output line by line
         for line in process.stdout:
             output_lines.append(line.rstrip())
             
-            # Update status based on output
-            if "Processing" in line or "Classifying" in line:
-                try:
-                    # Try to extract file count from output
-                    parts = line.split()
-                    for i, part in enumerate(parts):
-                        if part.isdigit() and int(part) > file_count:
-                            file_count = int(part)
-                except:
-                    pass
+            # Update status based on output like: [0397/0400] filename ...
+            m = re.search(r"\[(\d+)\/(\d+)\]", line)
+            if m:
+                file_count = max(file_count, int(m.group(1)))
+                total_files = max(total_files, int(m.group(2)))
             
             # Estimate progress (0-95%)
-            if sample_n and sample_n > 0:
-                progress = min(95, int((file_count / sample_n) * 90) + 5)
+            if total_files and total_files > 0:
+                progress = min(95, int((file_count / total_files) * 90) + 5)
             else:
                 progress = min(95, 5 + (len(output_lines) % 10))
             
             progress_bar.progress(progress)
-            status_text.write(f"🔄 Processing: {file_count} files processed...")
+            if total_files:
+                status_text.write(f"🔄 Processing: {file_count}/{total_files} files processed...")
+            else:
+                status_text.write(f"🔄 Processing: {file_count} files processed...")
             
             # Show last 10 lines of output
             log_area.code("\n".join(output_lines[-10:]), language="text")

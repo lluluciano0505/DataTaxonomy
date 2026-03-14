@@ -1,29 +1,35 @@
 project:
-  name: Fælledby
-  location: Copenhagen, Denmark
+  name: Downsview Framework Plan
+  location: Toronto, Canada
   year_range:
-  - 2018
-  - 2031
+  - 2019
+  - 2051
   lead_firm: Henning Larsen
   consultants:
+  - Aesthetica
+  - Aesthetica Studio
   - BirdLife Denmark
   - Faroese roots
+  - KPMB Architects
   - MOE
   - Niras
+  - SLA
   - Trondheim to Hong Kong
   - VIVA Landscape
   authorities:
   - By & Havn
+  - Canada Lands Company
   - Copenhagen Municipality
   - Danish EPA
-  notes: Fælledby is Copenhagen’s first all-timber neighborhood, designed to harmonize
-    the urban environment with natural landscapes. It establishes a community of ecologically
-    responsive housing units organized according to the model of a ‘rural village’.
+  - Northcrest Developments
+  notes: The Downsview Framework Plan reimagines a former airfield as a green-minded,
+    human-scale community with a focus on open space, mobility, and sustainable urban
+    systems. It establishes a flexible framework to guide the land’s incremental redevelopment.
 paths:
-  input_dir: /Users/luchieeoo/Desktop/Henning Larsen/Fælledby
+  input_dir: /Users/luchieeoo/Desktop/Henning Larsen/2022Masterplan
   output_csv: test_output.csv
 processing:
-  sample_n: 110
+  sample_n: 400
   model: openai/gpt-4-turbo
   parallel_workers: 16
   api_timeout: 30
