@@ -8,18 +8,20 @@ An automated file classification pipeline for large-scale urban design and archi
 - 🧠 **Smart confidentiality detection** — LLM judges semantic context, not just keyword matching (avoids false positives on technical drawings)
 - 📅 **Smart year detection** — validates years to prevent misclassification (2000+ only by default)
 - 📂 **Interactive file explorer** — click to open files directly from dashboard
+- 🔎 **Layer 4 Ask the Archive** — pure-LLM retrieval + per-file reading + evidence-based answer synthesis
 
 ---
 
 ## How It Works
 
-The pipeline runs in three layers:
+The system now runs in four layers:
 
 | Layer | File | What it does |
 |-------|------|--------------|
 | **Layer 1** | `core/layer1.py` | Rule-based: extracts file metadata, content sample, year, data hints, CAD metadata |
 | **Layer 2** | `core/layer2.py` | LLM-based: classifies domain, scale, lifecycle, asset type, governance, confidentiality |
 | **Layer 3** | `core/layer3.py` | Rule-based: risk assessment, age analysis, flags files needing manual review |
+| **Layer 4** | `core/layer4.py` | LLM query engine: shortlists files from CSV metadata, re-reads relevant files, then synthesizes evidence-grounded answers |
 
 Output is a CSV where every file gets 20+ structured fields, ready for filtering or analysis.
 
@@ -109,13 +111,13 @@ Open the friendly configuration UI without editing YAML. Includes:
 
 Click `▶️ START PROCESSING` in the `config_ui.py` page.
 
-Outputs `results.csv` in the project root.
+Outputs the configured CSV from `config.yaml` (default: `test_output.csv` in project root).
 
 ### 5. Launch the dashboard
 ```bash
 streamlit run dashboard.py
 ```
-Outputs appear at **http://localhost:8502** with:
+Outputs appear at **http://localhost:8501** with:
 - 📊 Overview stats (total files, critical reviews, data assets)
 - 🗺️ Domain × Scale heatmap
 - 📈 Timeline view (files per year by lifecycle)
@@ -133,6 +135,7 @@ DataTaxonomy/
 │   ├── layer1.py              # Metadata extraction, CAD parsing
 │   ├── layer2.py              # LLM classification
 │   ├── layer3.py              # Risk & age analysis
+│   ├── layer4.py              # Ask the Archive (LLM retrieval + synthesis)
 │   └── pipeline.py            # Batch runner, parallel support
 ├── docs/
 │   ├── CONFIG.md
@@ -180,7 +183,7 @@ DataTaxonomy/
 
 | Field | Options | Notes |
 |-------|---------|-------|
-| **Domain** | Architecture & Buildings, Landscape & Public Realm, Urban Planning & Massing, Mobility & Transport, Environment & Climate, Social & Demographics, Utilities & Infrastructure, Administrative & Legal, Project Management, Reference & Research | LLM infers from filename, folder, and content |
+| **Domain** | Landscape & Public Realm, Urban Planning & Massing, Architecture & Buildings, Environment & Climate, Mobility & Transport, Administrative & Legal, Project Management, Reference & Research, Unknown | LLM infers from filename, folder, and content |
 | **Scale** | Object / Parcel, Neighborhood / District, City / Municipal, Regional / National, Non-spatial | Reflects geographic scope |
 | **Lifecycle** | Brief / Concept, Schematic Design, Design Development, Construction Documents, As-Built / Completed, Reference / Archive | Derived from folder path + content signals |
 | **Asset Type** | Data, Document, Drawing, Media, Archive | Data = structured tables/GIS; Drawing = CAD/plans |
@@ -240,6 +243,7 @@ Click any file in the table to:
 ## Dashboard Features
 
 - **Overview Stats** — total files, critical reviews, data assets, confidentiality breakdown
+- **Ask the Archive (Layer 4)** — natural-language Q&A over processed files with cited evidence
 - **Domain × Scale Heatmap** — visual gap analysis
 - **Trust Scores** — governance breakdown (Official/Internal/External/Unknown)
 - **Timeline View** — files per year by lifecycle stage (spot aging issues)
@@ -286,14 +290,14 @@ project:
 
 paths:
   input_dir: "~/Desktop/Project"           # Folder to process
-  output_csv: "results.csv"                # Output filename
+  output_csv: "test_output.csv"            # Output filename/path
 
 processing:
   sample_n: 400                            # Files to process (null = all)
   model: "google/gemini-2.0-flash-001"   # LLM model
 
 dashboard:
-  port: 8502                               # Dashboard port
+  port: 8501                               # Dashboard port
   auto_launch: true                        # Open browser on start
 
 age_analysis:
@@ -310,7 +314,7 @@ age_analysis:
 | `OPENROUTER_API_KEY not found` | Ensure `.env` file exists with valid key |
 | `Input directory not found` | Check `config.yaml` paths (use absolute or ~/home shortcuts) |
 | `LLM classification failed` | Increase timeouts, check API rate limits, switch to faster model |
-| `Dashboard won't open` | Check port 8502 is free; manually visit `http://localhost:8502` |
+| `Dashboard won't open` | Check port 8501 is free; manually visit `http://localhost:8501` |
 | `Files misclassified as Confidential` | LLM semantic judgment was overridden; review content sample in CSV |
 
 ---

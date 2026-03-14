@@ -26,10 +26,10 @@ project:
     human-scale community with a focus on open space, mobility, and sustainable urban
     systems. It establishes a flexible framework to guide the land’s incremental redevelopment.
 paths:
-  input_dir: /Users/luchieeoo/Desktop/Henning Larsen/2022Masterplan
+  input_dir: /Users/luchieeoo/Desktop/Henning Larsen/KSP Loop
   output_csv: test_output.csv
 processing:
-  sample_n: 400
+  sample_n: 300
   model: openai/gpt-4-turbo
   parallel_workers: 16
   api_timeout: 30

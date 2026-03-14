@@ -618,12 +618,12 @@ if st.button("▶️  START PROCESSING", use_container_width=True, key="run_butt
                 
                 with col_next1:
                     if st.button("📈 Open Dashboard", use_container_width=True, key="open_dashboard"):
-                        st.info("🌐 Dashboard will launch at http://localhost:8502")
+                        st.info("🌐 Dashboard is available at http://localhost:8501")
                         st.markdown("""
                         **To view the dashboard:**
                         1. Open a new terminal
                         2. Run: `streamlit run dashboard.py`
-                        3. Visit: http://localhost:8502
+                        3. Visit: http://localhost:8501
                         """)
                 
                 with col_next2:

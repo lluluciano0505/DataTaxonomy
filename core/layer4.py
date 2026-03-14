@@ -1,9 +1,9 @@
 """Layer 4 — Query-driven evidence retrieval and answer synthesis.
 
 Given a user question, Layer 4:
-1. Uses LLM semantic judgement to binary-screen candidate files
-2. Selects the most relevant files for deeper reading
-3. Re-reads the most relevant files from disk
+1. Uses LLM to shortlist relevant files from CSV metadata
+2. Re-reads shortlisted files from disk
+3. Runs per-file LLM review
 4. Produces an answer with supporting files and evidence
 """
 
@@ -20,94 +20,86 @@ from openai import OpenAI
 from .layer1 import layer1_technical
 
 
-BINARY_RELEVANCE_PROMPT = """\
-You are screening archive files for a user question.
-Decide relevance using semantic understanding, not keyword overlap.
+SHORTLIST_PROMPT = """\
+You shortlist files relevant to a user question from a metadata catalog.
 
 Return ONLY JSON with this shape:
-{
-    "decisions": [
-        {
-            "file_path": "<full path exactly as provided>",
-            "relevant": true,
-            "confidence": 0.0,
-            "reason": "<short reason>"
-        }
-    ]
-}
+{{
+    "selected_file_paths": ["<path1>", "<path2>"],
+    "reason": "<short sentence>"
+}}
 
 Rules:
-- Evaluate each file independently by meaning and likely evidence value.
-- Mark relevant=true only if the file is likely useful for answering the question.
-- confidence is 0.0 to 1.0.
-- Keep reason concise (max 15 words).
+- Use semantic understanding (topic, intent, evidence value), not keyword counting.
+- Select 0 to {max_select} files from this catalog chunk.
+- Prefer files likely to directly answer the question.
 - Do not invent file paths.
 
 Question:
 {question}
 
-Files:
-{batch_preview}
+Catalog chunk:
+{catalog_chunk}
 """
 
 
-BATCH_ROUTER_PROMPT = """\
-You are selecting which archive batches are worth deeper inspection.
-Each batch card summarizes a subset of files.
+DOC_REVIEW_PROMPT = """\
+You review ONE file for a user question.
+Use semantic understanding of the content and metadata.
 
 Return ONLY JSON with this shape:
-{
-    "selected_batch_ids": [0, 1, 2],
-    "reason": "<one short sentence>"
-}
+{{
+    "file_path": "<exact path>",
+    "relevant": true,
+    "relevance_confidence": 0.0,
+    "why_it_matters": "<one short sentence>",
+    "evidence": "<short quote/snippet>",
+    "candidate_answer_fragment": "<what this file contributes>",
+    "gaps": "<missing details in this file>"
+}}
 
 Rules:
-- Select 1 to {max_batches} batch ids.
-- Choose only batches likely to contain evidence for the question.
-- Use semantic meaning, not literal keyword matching.
-- Do not invent batch ids.
-
-Question:
-{question}
-
-Batch cards:
-{batch_cards}
-"""
-
-
-ANSWER_PROMPT = """\
-You answer questions about a design-project archive using ONLY the provided candidate files.
-If the evidence is insufficient, say so clearly.
-
-Return ONLY JSON with this shape:
-{
-  "answer": "<clear answer in the user's language if possible>",
-  "confidence": "High|Medium|Low",
-  "gaps": "<what is still uncertain or missing>",
-  "relevant_files": [
-    {
-      "filename": "<file name>",
-      "file_path": "<full path>",
-      "why_it_matters": "<one sentence>",
-      "evidence": "<short quote or extracted snippet>"
-    }
-  ]
-}
-
-Rules:
-- Base the answer ONLY on the candidate files below.
-- Prefer direct evidence over speculation.
-- If the question asks "where", extract place/location clues.
-- If the question asks for suitability/recommendation, explain what the documents support, and where evidence is weak.
-- Keep `gaps` strictly in English (never Chinese), even if the answer is in another language.
-- Keep the answer concise but useful.
-- Include 2-6 relevant files when available.
+- Decide relevance for this specific file only.
+- If not relevant, set relevant=false and keep fields concise.
+- Do not invent facts beyond provided content.
 
 User question:
 {question}
 
-Candidate files:
-{candidate_context}
+File payload:
+{file_payload}
+"""
+
+
+AGGREGATE_ANSWER_PROMPT = """\
+You synthesize a final answer from per-file review results.
+Use ONLY the reviewed file evidence below.
+
+Return ONLY JSON with this shape:
+{{
+    "answer": "<clear answer in the user's language if possible>",
+    "confidence": "High|Medium|Low",
+    "gaps": "<remaining uncertainty in English>",
+    "relevant_files": [
+        {{
+            "filename": "<file name>",
+            "file_path": "<full path>",
+            "why_it_matters": "<one sentence>",
+            "evidence": "<short quote/snippet>"
+        }}
+    ]
+}}
+
+Rules:
+- Prefer direct evidence and reconcile contradictions explicitly.
+- Keep `gaps` strictly in English.
+- Include 2-6 files when possible.
+
+User question:
+{question}
+
+Per-file reviews:
+{reviews_context}
 """
 
 
@@ -120,7 +112,7 @@ def _safe_json_loads(raw: str, fallback: dict) -> dict:
         return fallback
 
 
-def _build_binary_batch_preview(batch: pd.DataFrame) -> str:
+def _build_catalog_chunk(batch: pd.DataFrame) -> str:
     parts: list[str] = []
     for idx, (_, row) in enumerate(batch.iterrows(), start=1):
         parts.append(
@@ -136,111 +128,23 @@ def _build_binary_batch_preview(batch: pd.DataFrame) -> str:
     return "\n\n".join(parts)
 
 
-def _build_batch_cards(df: pd.DataFrame, batch_size: int = 30) -> tuple[list[pd.DataFrame], str]:
-    """Build coarse batch cards for LLM routing before file-level relevance checks."""
-    batches: list[pd.DataFrame] = []
-    cards: list[str] = []
-    for batch_id, start in enumerate(range(0, len(df), max(1, batch_size))):
-        batch = df.iloc[start:start + max(1, batch_size)].copy()
-        batches.append(batch)
-
-        domains = ", ".join(batch.get("domain", pd.Series(dtype=str)).dropna().astype(str).value_counts().head(4).index.tolist())
-        lifecycle = ", ".join(batch.get("lifecycle", pd.Series(dtype=str)).dropna().astype(str).value_counts().head(4).index.tolist())
-        assets = ", ".join(batch.get("asset_type", pd.Series(dtype=str)).dropna().astype(str).value_counts().head(4).index.tolist())
-        sample_files = ", ".join(batch.get("filename", pd.Series(dtype=str)).dropna().astype(str).head(6).tolist())
-        sample_summaries = " | ".join(batch.get("short_summary", pd.Series(dtype=str)).dropna().astype(str).head(3).tolist())
-
-        cards.append(
-            f"[Batch {batch_id}]\n"
-            f"File count: {len(batch)}\n"
-            f"Top domains: {domains or 'Unknown'}\n"
-            f"Top lifecycle: {lifecycle or 'Unknown'}\n"
-            f"Top asset types: {assets or 'Unknown'}\n"
-            f"Sample filenames: {sample_files or 'None'}\n"
-            f"Sample summaries: {sample_summaries or 'None'}\n"
-        )
-
-    return batches, "\n\n".join(cards)
-
-
-def _route_relevant_batches(
-    question: str,
-    batch_cards: str,
-    client: OpenAI,
-    model: str,
-    max_batches: int,
-    total_batches: int,
-) -> list[int]:
-    """Use LLM to pick promising batch ids for detailed relevance screening."""
-    if total_batches <= max_batches:
-        return list(range(total_batches))
-
-    try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": "Respond only with valid JSON."},
-                {
-                    "role": "user",
-                    "content": BATCH_ROUTER_PROMPT.format(
-                        question=question.strip(),
-                        batch_cards=batch_cards,
-                        max_batches=max_batches,
-                    ),
-                },
-            ],
-            temperature=0,
-            response_format={"type": "json_object"},
-        )
-        raw = resp.choices[0].message.content or ""
-        parsed = _safe_json_loads(raw, {})
-        selected = [int(x) for x in parsed.get("selected_batch_ids", []) if str(x).strip().isdigit()]
-        selected = [x for x in selected if 0 <= x < total_batches]
-        if selected:
-            # preserve order + uniqueness
-            unique = []
-            for x in selected:
-                if x not in unique:
-                    unique.append(x)
-            return unique[:max_batches]
-    except Exception:
-        pass
-
-    # Fallback to first few batches when routing fails
-    return list(range(min(max_batches, total_batches)))
-
-
 def rank_candidate_rows(
     df: pd.DataFrame,
     question: str,
     client: OpenAI,
     model: str,
     top_k: int = 24,
-    batch_size: int = 30,
-    max_batches: int = 4,
+    chunk_size: int = 80,
 ) -> pd.DataFrame:
-    """Non-exhaustive LLM retrieval: route to likely batches, then binary relevance within those batches."""
+    """Pure-LLM retrieval: shortlist directly from CSV metadata chunks."""
     if df.empty:
         return df.copy()
 
     ranked = df.copy().reset_index(drop=True)
-    batches, batch_cards = _build_batch_cards(ranked, batch_size=batch_size)
-    selected_batch_ids = _route_relevant_batches(
-        question=question,
-        batch_cards=batch_cards,
-        client=client,
-        model=model,
-        max_batches=max_batches,
-        total_batches=len(batches),
-    )
+    selected_paths: list[str] = []
 
-    selected_df = pd.concat([batches[i] for i in selected_batch_ids], ignore_index=True) if selected_batch_ids else ranked.head(min(top_k, len(ranked))).copy()
-
-    relevance_score = pd.Series([0.0] * len(selected_df), index=selected_df.index, dtype="float")
-    is_relevant = pd.Series([False] * len(selected_df), index=selected_df.index, dtype="bool")
-
-    for start in range(0, len(selected_df), max(1, batch_size)):
-        batch = selected_df.iloc[start:start + max(1, batch_size)]
+    for start in range(0, len(ranked), max(1, chunk_size)):
+        chunk = ranked.iloc[start:start + max(1, chunk_size)]
         try:
             resp = client.chat.completions.create(
                 model=model,
@@ -248,9 +152,10 @@ def rank_candidate_rows(
                     {"role": "system", "content": "Respond only with valid JSON."},
                     {
                         "role": "user",
-                        "content": BINARY_RELEVANCE_PROMPT.format(
+                        "content": SHORTLIST_PROMPT.format(
                             question=question.strip(),
-                            batch_preview=_build_binary_batch_preview(batch),
+                            catalog_chunk=_build_catalog_chunk(chunk),
+                            max_select=max(2, min(12, top_k)),
                         ),
                     },
                 ],
@@ -259,43 +164,30 @@ def rank_candidate_rows(
             )
             raw = resp.choices[0].message.content or ""
             parsed = _safe_json_loads(raw, {})
-            decisions = parsed.get("decisions", [])
-
-            by_path = {
-                str(item.get("file_path", "")).strip(): item
-                for item in decisions
-                if str(item.get("file_path", "")).strip()
-            }
-            for idx, row in batch.iterrows():
-                path_key = str(row.get("file_path", "")).strip()
-                dec = by_path.get(path_key)
-                if not dec:
-                    continue
-                rel = bool(dec.get("relevant", False))
-                conf_raw = dec.get("confidence", 0.5)
-                try:
-                    conf = max(0.0, min(1.0, float(conf_raw)))
-                except Exception:
-                    conf = 0.5
-                is_relevant.loc[idx] = rel
-                relevance_score.loc[idx] = conf if rel else 0.0
+            picks = [str(x).strip() for x in parsed.get("selected_file_paths", []) if str(x).strip()]
+            selected_paths.extend(picks)
         except Exception:
             continue
 
-    selected_df["_query_score"] = relevance_score
-    relevant_rows = selected_df[is_relevant].copy()
-    if not relevant_rows.empty:
-        relevant_rows = relevant_rows.sort_values(
-            ["_query_score", "confidence", "year"],
-            ascending=[False, False, False],
-            na_position="last",
-        )
-        return relevant_rows.head(top_k)
+    # preserve order + uniqueness
+    unique_paths: list[str] = []
+    for p in selected_paths:
+        if p not in unique_paths:
+            unique_paths.append(p)
 
-    # Fallback: no clear relevant rows returned; keep best-confidence rows for next LLM stage
-    selected_df = selected_df.sort_values(["confidence", "year"], ascending=[False, False], na_position="last")
-    selected_df["_query_score"] = 0.0
-    return selected_df.head(min(top_k, len(selected_df)))
+    if unique_paths:
+        selected_df = ranked[ranked["file_path"].astype(str).isin(unique_paths)].copy()
+        # keep LLM-selected order
+        order_map = {p: i for i, p in enumerate(unique_paths)}
+        selected_df["_llm_order"] = selected_df["file_path"].astype(str).map(order_map).fillna(999999)
+        selected_df = selected_df.sort_values(["_llm_order", "confidence", "year"], ascending=[True, False, False], na_position="last")
+        selected_df["_query_score"] = 1.0
+        return selected_df.head(top_k)
+
+    # Fallback when LLM returns no paths
+    fallback = ranked.sort_values(["confidence", "year"], ascending=[False, False], na_position="last").head(min(top_k, len(ranked))).copy()
+    fallback["_query_score"] = 0.0
+    return fallback
 
 
 def _read_full_file_content(file_path: Path, max_chars: int = 24000) -> tuple[str, str]:
@@ -452,6 +344,89 @@ def _build_candidate_context(docs: list[dict[str, Any]]) -> str:
     return "\n\n".join(parts)
 
 
+def _build_single_file_payload(doc: dict[str, Any]) -> str:
+    return (
+        f"Filename: {doc.get('filename', '')}\n"
+        f"Path: {doc.get('file_path', '')}\n"
+        f"Domain: {doc.get('domain', '')}\n"
+        f"Asset Type: {doc.get('asset_type', '')}\n"
+        f"Lifecycle: {doc.get('lifecycle', '')}\n"
+        f"Pipeline Summary: {doc.get('summary', '')}\n"
+        f"Extraction Coverage: {doc.get('coverage', '')}\n"
+        f"Content:\n{doc.get('content_sample', '')}\n"
+    )
+
+
+def _review_files_individually(
+    question: str,
+    docs: list[dict[str, Any]],
+    client: OpenAI,
+    model: str,
+) -> list[dict[str, Any]]:
+    """Run one LLM call per file so each file is read and judged independently."""
+    reviews: list[dict[str, Any]] = []
+    for doc in docs:
+        fallback = {
+            "file_path": doc.get("file_path", ""),
+            "relevant": False,
+            "relevance_confidence": 0.0,
+            "why_it_matters": "Could not reliably parse this file review.",
+            "evidence": str(doc.get("content_sample", ""))[:200],
+            "candidate_answer_fragment": "",
+            "gaps": "File-level review failed.",
+        }
+        try:
+            resp = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": "Respond only with valid JSON."},
+                    {
+                        "role": "user",
+                        "content": DOC_REVIEW_PROMPT.format(
+                            question=question.strip(),
+                            file_payload=_build_single_file_payload(doc),
+                        ),
+                    },
+                ],
+                temperature=0,
+                response_format={"type": "json_object"},
+            )
+            raw = resp.choices[0].message.content or ""
+            parsed = _safe_json_loads(raw, fallback)
+            parsed.setdefault("file_path", doc.get("file_path", ""))
+            parsed.setdefault("relevant", False)
+            parsed.setdefault("relevance_confidence", 0.0)
+            parsed.setdefault("why_it_matters", "")
+            parsed.setdefault("evidence", "")
+            parsed.setdefault("candidate_answer_fragment", "")
+            parsed.setdefault("gaps", "")
+            parsed["filename"] = doc.get("filename", "")
+            reviews.append(parsed)
+        except Exception as exc:
+            fb = dict(fallback)
+            fb["gaps"] = f"File-level review request failed: {exc}"
+            fb["filename"] = doc.get("filename", "")
+            reviews.append(fb)
+    return reviews
+
+
+def _build_reviews_context(reviews: list[dict[str, Any]]) -> str:
+    blocks: list[str] = []
+    for i, r in enumerate(reviews, start=1):
+        blocks.append(
+            f"[Review {i}]\n"
+            f"Filename: {r.get('filename', '')}\n"
+            f"Path: {r.get('file_path', '')}\n"
+            f"Relevant: {r.get('relevant', False)}\n"
+            f"Relevance confidence: {r.get('relevance_confidence', 0.0)}\n"
+            f"Why it matters: {r.get('why_it_matters', '')}\n"
+            f"Evidence: {r.get('evidence', '')}\n"
+            f"Answer fragment: {r.get('candidate_answer_fragment', '')}\n"
+            f"File gaps: {r.get('gaps', '')}\n"
+        )
+    return "\n\n".join(blocks)
+
+
 def _prepare_docs_for_synthesis(
     docs: list[dict[str, Any]],
     max_docs: int = 8,
@@ -492,7 +467,7 @@ def _prepare_docs_for_synthesis(
 
 
 def synthesize_query_answer(question: str, reread_docs: list[dict[str, Any]], client: OpenAI, model: str) -> dict:
-    """Ask the LLM to answer using only the re-read candidate documents."""
+    """Two-step synthesis: per-file LLM review, then LLM aggregation."""
     fallback_files = [
         {
             "filename": doc.get("filename", ""),
@@ -518,6 +493,9 @@ def synthesize_query_answer(question: str, reread_docs: list[dict[str, Any]], cl
         }
 
     docs_for_prompt = _prepare_docs_for_synthesis(reread_docs)
+    reviews = _review_files_individually(question, docs_for_prompt, client=client, model=model)
+    relevant_reviews = [r for r in reviews if bool(r.get("relevant", False))]
+    reviews_for_aggregate = relevant_reviews or reviews
 
     try:
         resp = client.chat.completions.create(
@@ -526,9 +504,9 @@ def synthesize_query_answer(question: str, reread_docs: list[dict[str, Any]], cl
                 {"role": "system", "content": "Respond only with valid JSON."},
                 {
                     "role": "user",
-                    "content": ANSWER_PROMPT.format(
+                    "content": AGGREGATE_ANSWER_PROMPT.format(
                         question=question.strip(),
-                        candidate_context=_build_candidate_context(docs_for_prompt),
+                        reviews_context=_build_reviews_context(reviews_for_aggregate),
                     ),
                 },
             ],

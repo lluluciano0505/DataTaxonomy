@@ -14,7 +14,7 @@ import os
 from dotenv import load_dotenv
 from openai import OpenAI
 
-from config_loader import load_config as load_app_config
+from config_loader import load_config as load_app_config, get_paths_config
 from core.layer4 import layer4_query
 
 load_dotenv()
@@ -38,10 +38,12 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-CSV_PATH = Path("test_output.csv")
+app_config = load_app_config()
+paths_cfg = get_paths_config(app_config)
+CSV_PATH = Path(paths_cfg.get("output_csv", Path("test_output.csv"))).expanduser()
 
 @st.cache_data
-def load_data(path):
+def load_data(path: Path, mtime_ns: int, file_size: int):
     try:
         if path.exists():
             df = pd.read_csv(path)
@@ -54,9 +56,19 @@ def load_data(path):
         st.error(f"Could not load CSV file: {e}")
         st.stop()
 
-# Load data (real or sample)
-df = load_data(CSV_PATH)
-app_config = load_app_config()
+# Load data (cache key includes file timestamp + size, so new runs show immediately)
+if CSV_PATH.exists():
+    stat = CSV_PATH.stat()
+    csv_mtime_ns = int(stat.st_mtime_ns)
+    csv_size = int(stat.st_size)
+else:
+    csv_mtime_ns = 0
+    csv_size = 0
+
+if st.sidebar.button("🔄 Refresh data", use_container_width=True):
+    st.cache_data.clear()
+
+df = load_data(CSV_PATH, csv_mtime_ns, csv_size)
 layer4_model = app_config.get("processing", {}).get("model", os.getenv("MODEL", "google/gemini-2.0-flash-001"))
 api_key = os.getenv("OPENROUTER_API_KEY")
 
@@ -127,7 +139,7 @@ query_default = st.session_state.get("layer4_question", "")
 query_text = st.text_area(
     "Question",
     value=query_default,
-    placeholder="例如：什么木材适合使用？ / 哪里提到清真寺？ / Which files mention hydrology constraints?",
+    placeholder="Examples: Which timber types are suitable? / Where is the mosque mentioned? / Which files mention hydrology constraints?",
     height=90,
     key="layer4_question_box",
 )
