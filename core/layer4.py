@@ -1,8 +1,8 @@
 """Layer 4 — Query-driven evidence retrieval and answer synthesis.
 
 Given a user question, Layer 4:
-1. Builds a search plan from the question
-2. Ranks candidate files from processed CSV rows
+1. Uses LLM semantic judgement to binary-screen candidate files
+2. Selects the most relevant files for deeper reading
 3. Re-reads the most relevant files from disk
 4. Produces an answer with supporting files and evidence
 """
@@ -85,6 +85,37 @@ Question:
 
 Candidate previews:
 {candidate_preview}
+"""
+
+
+BINARY_RELEVANCE_PROMPT = """\
+You are screening archive files for a user question.
+Decide relevance using semantic understanding, not keyword overlap.
+
+Return ONLY JSON with this shape:
+{
+    "decisions": [
+        {
+            "file_path": "<full path exactly as provided>",
+            "relevant": true,
+            "confidence": 0.0,
+            "reason": "<short reason>"
+        }
+    ]
+}
+
+Rules:
+- Evaluate each file independently by meaning and likely evidence value.
+- Mark relevant=true only if the file is likely useful for answering the question.
+- confidence is 0.0 to 1.0.
+- Keep reason concise (max 15 words).
+- Do not invent file paths.
+
+Question:
+{question}
+
+Files:
+{batch_preview}
 """
 
 
@@ -232,61 +263,94 @@ def _bm25_score(
     return score
 
 
-def rank_candidate_rows(df: pd.DataFrame, plan: dict, top_k: int = 8) -> pd.DataFrame:
-    """Score processed rows by query relevance using BM25 + taxonomy hint bonuses."""
+def _build_binary_batch_preview(batch: pd.DataFrame) -> str:
+    parts: list[str] = []
+    for idx, (_, row) in enumerate(batch.iterrows(), start=1):
+        parts.append(
+            f"[File {idx}]\n"
+            f"Filename: {row.get('filename', '')}\n"
+            f"Path: {row.get('file_path', '')}\n"
+            f"Domain: {row.get('domain', '')}\n"
+            f"Asset Type: {row.get('asset_type', '')}\n"
+            f"Lifecycle: {row.get('lifecycle', '')}\n"
+            f"Summary: {str(row.get('short_summary', ''))[:220]}\n"
+            f"Reasoning: {str(row.get('_reasoning', ''))[:220]}\n"
+        )
+    return "\n\n".join(parts)
+
+
+def rank_candidate_rows(
+    df: pd.DataFrame,
+    question: str,
+    client: OpenAI,
+    model: str,
+    top_k: int = 12,
+    batch_size: int = 20,
+) -> pd.DataFrame:
+    """LLM-first binary relevance filter over processed rows (semantic, not keyword-based)."""
     if df.empty:
         return df.copy()
 
-    ranked = df.copy()
-    domain_hints = {str(x).strip().lower() for x in plan.get("domain_hints", []) if str(x).strip()}
-    asset_hints = {str(x).strip().lower() for x in plan.get("asset_hints", []) if str(x).strip()}
-    lifecycle_hints = {str(x).strip().lower() for x in plan.get("lifecycle_hints", []) if str(x).strip()}
+    ranked = df.copy().reset_index(drop=True)
+    relevance_score = pd.Series([0.0] * len(ranked), index=ranked.index, dtype="float")
+    is_relevant = pd.Series([False] * len(ranked), index=ranked.index, dtype="bool")
 
-    query_tokens = _tokenize(" ".join(str(x) for x in plan.get("search_terms", [])))
+    for start in range(0, len(ranked), max(1, batch_size)):
+        batch = ranked.iloc[start:start + max(1, batch_size)]
+        try:
+            resp = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": "Respond only with valid JSON."},
+                    {
+                        "role": "user",
+                        "content": BINARY_RELEVANCE_PROMPT.format(
+                            question=question.strip(),
+                            batch_preview=_build_binary_batch_preview(batch),
+                        ),
+                    },
+                ],
+                temperature=0,
+                response_format={"type": "json_object"},
+            )
+            raw = resp.choices[0].message.content or ""
+            parsed = _safe_json_loads(raw, {})
+            decisions = parsed.get("decisions", [])
 
-    # Build BM25 corpus from all rows
-    docs, avg_dl, df_freq, N = _build_bm25_corpus(ranked)
+            by_path = {
+                str(item.get("file_path", "")).strip(): item
+                for item in decisions
+                if str(item.get("file_path", "")).strip()
+            }
+            for idx, row in batch.iterrows():
+                path_key = str(row.get("file_path", "")).strip()
+                dec = by_path.get(path_key)
+                if not dec:
+                    continue
+                rel = bool(dec.get("relevant", False))
+                conf_raw = dec.get("confidence", 0.5)
+                try:
+                    conf = max(0.0, min(1.0, float(conf_raw)))
+                except Exception:
+                    conf = 0.5
+                is_relevant.loc[idx] = rel
+                relevance_score.loc[idx] = conf if rel else 0.0
+        except Exception:
+            continue
 
-    scores: list[float] = []
-    for i, (_, row) in enumerate(ranked.iterrows()):
-        score = _bm25_score(query_tokens, docs[i], avg_dl, df_freq, N)
+    ranked["_query_score"] = relevance_score
+    relevant_rows = ranked[is_relevant].copy()
+    if not relevant_rows.empty:
+        relevant_rows = relevant_rows.sort_values(
+            ["_query_score", "confidence", "year"],
+            ascending=[False, False, False],
+            na_position="last",
+        )
+        return relevant_rows.head(top_k)
 
-        # Taxonomy hint bonuses (partial match)
-        row_domain = str(row.get("domain", "")).strip().lower()
-        for hint in domain_hints:
-            if hint in row_domain or row_domain in hint:
-                score += 3.0
-                break
-
-        row_asset = str(row.get("asset_type", "")).strip().lower()
-        for hint in asset_hints:
-            if hint in row_asset or row_asset in hint:
-                score += 2.0
-                break
-
-        row_lifecycle = str(row.get("lifecycle", "")).strip().lower()
-        for hint in lifecycle_hints:
-            if hint in row_lifecycle or row_lifecycle in hint:
-                score += 1.5
-                break
-
-        if str(row.get("review_priority", "")).strip().lower() in {"critical", "urgent", "high"}:
-            score += 0.5
-        if str(row.get("confidence", "")).strip().lower() == "high":
-            score += 0.3
-
-        scores.append(score)
-
-    ranked["_query_score"] = scores
-    ranked = ranked.sort_values(
-        ["_query_score", "confidence", "year"],
-        ascending=[False, False, False],
-        na_position="last",
-    )
-
-    positive = ranked[ranked["_query_score"] > 0].head(top_k)
-    if not positive.empty:
-        return positive
+    # Fallback: no clear relevant rows returned; keep best-confidence rows for next LLM stage
+    ranked = ranked.sort_values(["confidence", "year"], ascending=[False, False], na_position="last")
+    ranked["_query_score"] = 0.0
     return ranked.head(min(top_k, len(ranked)))
 
 
@@ -570,8 +634,22 @@ def layer4_query(
             "candidate_count": 0,
         }
 
-    plan = build_search_plan(question, client=client, model=model)
-    candidates = rank_candidate_rows(processed_df, plan=plan, top_k=top_k)
+    plan = {
+        "mode": "llm_binary_relevance",
+        "intent": question.strip(),
+        "search_terms": [],
+        "domain_hints": [],
+        "asset_hints": [],
+        "lifecycle_hints": [],
+        "answer_type": "unknown",
+    }
+    candidates = rank_candidate_rows(
+        processed_df,
+        question=question,
+        client=client,
+        model=model,
+        top_k=max(top_k, 10),
+    )
     deep_read_candidates = select_files_for_deep_read(question, candidates, client=client, model=model, max_select=reread_k)
     reread_docs = reread_candidate_files(deep_read_candidates, max_files=reread_k)
     answer = synthesize_query_answer(question, reread_docs, client=client, model=model)
