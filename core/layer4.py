@@ -10,82 +10,14 @@ Given a user question, Layer 4:
 from __future__ import annotations
 
 import json
-import math
 import re
 from pathlib import Path
 from typing import Any
-from collections import Counter
 
 import pandas as pd
 from openai import OpenAI
 
 from .layer1 import layer1_technical
-
-_STOPWORDS = {
-    "the", "and", "for", "with", "that", "this", "from", "into", "about", "where",
-    "what", "which", "when", "does", "have", "there", "their", "your", "our", "should",
-    "would", "could", "using", "used", "use", "find", "look", "need", "question",
-    "project", "file", "files", "document", "documents", "data", "layer", "query",
-}
-
-
-SEARCH_PLAN_PROMPT = """\
-You help search an urban-design project archive.
-Given a user question, produce a compact search plan for retrieving relevant files.
-
-Return ONLY JSON with this shape:
-{
-  "intent": "<short sentence>",
-  "search_terms": ["<keywords and phrases, bilingual if useful>"],
-  "domain_hints": ["<likely domain names>"],
-  "asset_hints": ["<likely asset types>"],
-  "lifecycle_hints": ["<likely lifecycle stages>"],
-  "answer_type": "fact|location|comparison|recommendation|list|unknown"
-}
-
-Rules:
-- Keep search_terms concise and retrieval-oriented.
-- CRITICAL: The archive files are in Danish and English. If the question is in
-  Chinese or any other language, you MUST translate every key concept into English
-  (and include relevant Danish equivalents if you know them) and add those
-  translations as additional entries in search_terms. Never leave search_terms
-  in only the question's language if that language is not Danish or English.
-  Example: Chinese question about timber → add "timber", "wood", "tr\xe6", "construction".
-- Domain hints must be from likely archive taxonomy such as Landscape & Public Realm,
-  Urban Planning & Massing, Architecture & Buildings, Environment & Climate,
-  Mobility & Transport, Administrative & Legal, Project Management, Reference & Research.
-- Asset hints should be values like Data, Document, Drawing, Media, Archive.
-- lifecycle_hints can be empty.
-- If unsure, return broad but useful hints instead of inventing specifics.
-
-Question: {question}
-"""
-
-
-SELECT_CANDIDATES_PROMPT = """\
-You help shortlist archive files for deep reading.
-You are given a user question and a list of candidate files with metadata and short summaries.
-
-Return ONLY JSON with this shape:
-{
-    "selected_file_paths": ["<full path>", "<full path>"],
-    "selection_reason": "<one sentence>",
-    "notes": "<optional note about uncertainty>"
-}
-
-Rules:
-- Select 2 to 5 file paths that are most worth reading in full.
-- Prefer files whose summary, filename, domain, lifecycle, and path suggest direct evidence.
-- If the question is about location, prioritize plans, reports, and summaries likely to mention places.
-- If the question is about suitability or recommendation, prioritize specs, reports, data, and studies.
-- Do not invent file paths.
-
-Question:
-{question}
-
-Candidate previews:
-{candidate_preview}
-"""
 
 
 BINARY_RELEVANCE_PROMPT = """\
@@ -119,6 +51,30 @@ Files:
 """
 
 
+BATCH_ROUTER_PROMPT = """\
+You are selecting which archive batches are worth deeper inspection.
+Each batch card summarizes a subset of files.
+
+Return ONLY JSON with this shape:
+{
+    "selected_batch_ids": [0, 1, 2],
+    "reason": "<one short sentence>"
+}
+
+Rules:
+- Select 1 to {max_batches} batch ids.
+- Choose only batches likely to contain evidence for the question.
+- Use semantic meaning, not literal keyword matching.
+- Do not invent batch ids.
+
+Question:
+{question}
+
+Batch cards:
+{batch_cards}
+"""
+
+
 ANSWER_PROMPT = """\
 You answer questions about a design-project archive using ONLY the provided candidate files.
 If the evidence is insufficient, say so clearly.
@@ -143,6 +99,7 @@ Rules:
 - Prefer direct evidence over speculation.
 - If the question asks "where", extract place/location clues.
 - If the question asks for suitability/recommendation, explain what the documents support, and where evidence is weak.
+- Keep `gaps` strictly in English (never Chinese), even if the answer is in another language.
 - Keep the answer concise but useful.
 - Include 2-6 relevant files when available.
 
@@ -163,106 +120,6 @@ def _safe_json_loads(raw: str, fallback: dict) -> dict:
         return fallback
 
 
-def _tokenize(text: str) -> list[str]:
-    text = (text or "").lower()
-    latin_tokens = re.findall(r"[a-z0-9][a-z0-9\-_]{1,}", text)
-    phrase_tokens = re.findall(r"[\u4e00-\u9fff]{2,}", text)
-    tokens = []
-    for token in latin_tokens + phrase_tokens:
-        if token not in _STOPWORDS and token not in tokens:
-            tokens.append(token)
-    return tokens
-
-
-def build_search_plan(question: str, client: OpenAI, model: str) -> dict:
-    """Use the LLM to derive retrieval hints from the user question."""
-    fallback = {
-        "intent": question.strip(),
-        "search_terms": _tokenize(question)[:8],
-        "domain_hints": [],
-        "asset_hints": [],
-        "lifecycle_hints": [],
-        "answer_type": "unknown",
-    }
-
-    try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": "Respond only with valid JSON."},
-                {"role": "user", "content": SEARCH_PLAN_PROMPT.format(question=question.strip())},
-            ],
-            temperature=0,
-            response_format={"type": "json_object"},
-        )
-        raw = resp.choices[0].message.content or ""
-        plan = _safe_json_loads(raw, fallback)
-    except Exception:
-        plan = fallback
-
-    plan.setdefault("intent", question.strip())
-    plan.setdefault("search_terms", fallback["search_terms"])
-    plan.setdefault("domain_hints", [])
-    plan.setdefault("asset_hints", [])
-    plan.setdefault("lifecycle_hints", [])
-    plan.setdefault("answer_type", "unknown")
-    return plan
-
-
-def _score_text_match(text: str, search_terms: list[str], weight: float) -> float:
-    # kept for any external callers; not used in ranking anymore
-    hay = (text or "").lower()
-    return sum(weight for t in search_terms if str(t or "").strip().lower() in hay)
-
-
-# ── BM25 retrieval ─────────────────────────────────────────────────────────
-_BM25_FIELDS = [
-    "filename", "keywords", "short_summary", "_reasoning",
-    "review_reasons", "information_type", "domain",
-    "lifecycle", "asset_type", "file_path",
-]
-
-
-def _build_bm25_corpus(df: pd.DataFrame) -> tuple[list[list[str]], float, Counter, int]:
-    """Tokenise every row into a combined doc and compute BM25 corpus stats."""
-    docs: list[list[str]] = []
-    for _, row in df.iterrows():
-        combined = " ".join(str(row.get(col, "")) for col in _BM25_FIELDS)
-        docs.append(_tokenize(combined))
-    N = len(docs)
-    df_freq: Counter = Counter()
-    for doc in docs:
-        df_freq.update(set(doc))
-    avg_dl = sum(len(d) for d in docs) / max(N, 1)
-    return docs, avg_dl, df_freq, N
-
-
-def _bm25_score(
-    query_tokens: list[str],
-    doc_tokens: list[str],
-    avg_dl: float,
-    df_freq: Counter,
-    N: int,
-    k1: float = 1.5,
-    b: float = 0.75,
-) -> float:
-    """BM25 score for one document against query tokens."""
-    if not query_tokens or not doc_tokens:
-        return 0.0
-    dl = len(doc_tokens)
-    tf_counts = Counter(doc_tokens)
-    score = 0.0
-    for term in query_tokens:
-        tf = tf_counts.get(term, 0)
-        if tf == 0:
-            continue
-        n_t = df_freq.get(term, 0)
-        idf = math.log((N - n_t + 0.5) / (n_t + 0.5) + 1.0)
-        tf_norm = (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * dl / max(avg_dl, 1)))
-        score += idf * tf_norm
-    return score
-
-
 def _build_binary_batch_preview(batch: pd.DataFrame) -> str:
     parts: list[str] = []
     for idx, (_, row) in enumerate(batch.iterrows(), start=1):
@@ -279,24 +136,111 @@ def _build_binary_batch_preview(batch: pd.DataFrame) -> str:
     return "\n\n".join(parts)
 
 
+def _build_batch_cards(df: pd.DataFrame, batch_size: int = 30) -> tuple[list[pd.DataFrame], str]:
+    """Build coarse batch cards for LLM routing before file-level relevance checks."""
+    batches: list[pd.DataFrame] = []
+    cards: list[str] = []
+    for batch_id, start in enumerate(range(0, len(df), max(1, batch_size))):
+        batch = df.iloc[start:start + max(1, batch_size)].copy()
+        batches.append(batch)
+
+        domains = ", ".join(batch.get("domain", pd.Series(dtype=str)).dropna().astype(str).value_counts().head(4).index.tolist())
+        lifecycle = ", ".join(batch.get("lifecycle", pd.Series(dtype=str)).dropna().astype(str).value_counts().head(4).index.tolist())
+        assets = ", ".join(batch.get("asset_type", pd.Series(dtype=str)).dropna().astype(str).value_counts().head(4).index.tolist())
+        sample_files = ", ".join(batch.get("filename", pd.Series(dtype=str)).dropna().astype(str).head(6).tolist())
+        sample_summaries = " | ".join(batch.get("short_summary", pd.Series(dtype=str)).dropna().astype(str).head(3).tolist())
+
+        cards.append(
+            f"[Batch {batch_id}]\n"
+            f"File count: {len(batch)}\n"
+            f"Top domains: {domains or 'Unknown'}\n"
+            f"Top lifecycle: {lifecycle or 'Unknown'}\n"
+            f"Top asset types: {assets or 'Unknown'}\n"
+            f"Sample filenames: {sample_files or 'None'}\n"
+            f"Sample summaries: {sample_summaries or 'None'}\n"
+        )
+
+    return batches, "\n\n".join(cards)
+
+
+def _route_relevant_batches(
+    question: str,
+    batch_cards: str,
+    client: OpenAI,
+    model: str,
+    max_batches: int,
+    total_batches: int,
+) -> list[int]:
+    """Use LLM to pick promising batch ids for detailed relevance screening."""
+    if total_batches <= max_batches:
+        return list(range(total_batches))
+
+    try:
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": "Respond only with valid JSON."},
+                {
+                    "role": "user",
+                    "content": BATCH_ROUTER_PROMPT.format(
+                        question=question.strip(),
+                        batch_cards=batch_cards,
+                        max_batches=max_batches,
+                    ),
+                },
+            ],
+            temperature=0,
+            response_format={"type": "json_object"},
+        )
+        raw = resp.choices[0].message.content or ""
+        parsed = _safe_json_loads(raw, {})
+        selected = [int(x) for x in parsed.get("selected_batch_ids", []) if str(x).strip().isdigit()]
+        selected = [x for x in selected if 0 <= x < total_batches]
+        if selected:
+            # preserve order + uniqueness
+            unique = []
+            for x in selected:
+                if x not in unique:
+                    unique.append(x)
+            return unique[:max_batches]
+    except Exception:
+        pass
+
+    # Fallback to first few batches when routing fails
+    return list(range(min(max_batches, total_batches)))
+
+
 def rank_candidate_rows(
     df: pd.DataFrame,
     question: str,
     client: OpenAI,
     model: str,
-    top_k: int = 12,
-    batch_size: int = 20,
+    top_k: int = 24,
+    batch_size: int = 30,
+    max_batches: int = 4,
 ) -> pd.DataFrame:
-    """LLM-first binary relevance filter over processed rows (semantic, not keyword-based)."""
+    """Non-exhaustive LLM retrieval: route to likely batches, then binary relevance within those batches."""
     if df.empty:
         return df.copy()
 
     ranked = df.copy().reset_index(drop=True)
-    relevance_score = pd.Series([0.0] * len(ranked), index=ranked.index, dtype="float")
-    is_relevant = pd.Series([False] * len(ranked), index=ranked.index, dtype="bool")
+    batches, batch_cards = _build_batch_cards(ranked, batch_size=batch_size)
+    selected_batch_ids = _route_relevant_batches(
+        question=question,
+        batch_cards=batch_cards,
+        client=client,
+        model=model,
+        max_batches=max_batches,
+        total_batches=len(batches),
+    )
 
-    for start in range(0, len(ranked), max(1, batch_size)):
-        batch = ranked.iloc[start:start + max(1, batch_size)]
+    selected_df = pd.concat([batches[i] for i in selected_batch_ids], ignore_index=True) if selected_batch_ids else ranked.head(min(top_k, len(ranked))).copy()
+
+    relevance_score = pd.Series([0.0] * len(selected_df), index=selected_df.index, dtype="float")
+    is_relevant = pd.Series([False] * len(selected_df), index=selected_df.index, dtype="bool")
+
+    for start in range(0, len(selected_df), max(1, batch_size)):
+        batch = selected_df.iloc[start:start + max(1, batch_size)]
         try:
             resp = client.chat.completions.create(
                 model=model,
@@ -338,8 +282,8 @@ def rank_candidate_rows(
         except Exception:
             continue
 
-    ranked["_query_score"] = relevance_score
-    relevant_rows = ranked[is_relevant].copy()
+    selected_df["_query_score"] = relevance_score
+    relevant_rows = selected_df[is_relevant].copy()
     if not relevant_rows.empty:
         relevant_rows = relevant_rows.sort_values(
             ["_query_score", "confidence", "year"],
@@ -349,9 +293,9 @@ def rank_candidate_rows(
         return relevant_rows.head(top_k)
 
     # Fallback: no clear relevant rows returned; keep best-confidence rows for next LLM stage
-    ranked = ranked.sort_values(["confidence", "year"], ascending=[False, False], na_position="last")
-    ranked["_query_score"] = 0.0
-    return ranked.head(min(top_k, len(ranked)))
+    selected_df = selected_df.sort_values(["confidence", "year"], ascending=[False, False], na_position="last")
+    selected_df["_query_score"] = 0.0
+    return selected_df.head(min(top_k, len(selected_df)))
 
 
 def _read_full_file_content(file_path: Path, max_chars: int = 24000) -> tuple[str, str]:
@@ -440,58 +384,6 @@ def _read_full_file_content(file_path: Path, max_chars: int = 24000) -> tuple[st
     return str(fallback.get("content_sample", ""))[:max_chars], str(fallback.get("extraction_coverage", "layer1 fallback"))
 
 
-def _build_candidate_preview(candidates: pd.DataFrame) -> str:
-    parts: list[str] = []
-    for idx, (_, row) in enumerate(candidates.iterrows(), start=1):
-        parts.append(
-            f"[Preview {idx}]\n"
-            f"Filename: {row.get('filename', '')}\n"
-            f"Path: {row.get('file_path', '')}\n"
-            f"Domain: {row.get('domain', '')}\n"
-            f"Asset Type: {row.get('asset_type', '')}\n"
-            f"Lifecycle: {row.get('lifecycle', '')}\n"
-            f"Score: {float(row.get('_query_score', 0)):.1f}\n"
-            f"Summary: {row.get('short_summary', '')}\n"
-            f"Reasons: {row.get('review_reasons', '')}\n"
-        )
-    return "\n\n".join(parts)
-
-
-def select_files_for_deep_read(question: str, candidates: pd.DataFrame, client: OpenAI, model: str, max_select: int = 4) -> pd.DataFrame:
-    """Use the LLM to choose which candidate files deserve deeper reading."""
-    if candidates.empty:
-        return candidates
-
-    fallback = candidates.head(max_select)
-    try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": "Respond only with valid JSON."},
-                {
-                    "role": "user",
-                    "content": SELECT_CANDIDATES_PROMPT.format(
-                        question=question.strip(),
-                        candidate_preview=_build_candidate_preview(candidates),
-                    ),
-                },
-            ],
-            temperature=0,
-            response_format={"type": "json_object"},
-        )
-        raw = resp.choices[0].message.content or ""
-        parsed = _safe_json_loads(raw, {})
-        selected_paths = [str(x) for x in parsed.get("selected_file_paths", []) if str(x).strip()]
-        if selected_paths:
-            selected = candidates[candidates["file_path"].astype(str).isin(selected_paths)]
-            if not selected.empty:
-                return selected.head(max_select)
-    except Exception:
-        pass
-
-    return fallback
-
-
 def reread_candidate_files(candidates: pd.DataFrame, max_files: int = 6) -> list[dict[str, Any]]:
     """Re-read selected files from disk using deeper/full-content reads when possible."""
     reread_docs: list[dict[str, Any]] = []
@@ -560,6 +452,45 @@ def _build_candidate_context(docs: list[dict[str, Any]]) -> str:
     return "\n\n".join(parts)
 
 
+def _prepare_docs_for_synthesis(
+    docs: list[dict[str, Any]],
+    max_docs: int = 8,
+    max_doc_chars: int = 6000,
+    max_total_chars: int = 70000,
+) -> list[dict[str, Any]]:
+    """Bound context size so LLM synthesis does not fail from oversized prompts."""
+    if not docs:
+        return []
+
+    ordered = sorted(docs, key=lambda d: float(d.get("query_score", 0.0)), reverse=True)
+    selected: list[dict[str, Any]] = []
+    used_chars = 0
+
+    for doc in ordered[:max_docs * 2]:
+        if len(selected) >= max_docs:
+            break
+        raw = str(doc.get("content_sample", ""))
+        clipped = raw[:max_doc_chars]
+        add_len = len(clipped)
+        if selected and used_chars + add_len > max_total_chars:
+            continue
+        if not selected and add_len > max_total_chars:
+            clipped = clipped[:max_total_chars]
+            add_len = len(clipped)
+
+        d2 = dict(doc)
+        d2["content_sample"] = clipped
+        selected.append(d2)
+        used_chars += add_len
+
+    return selected or [
+        {
+            **dict(ordered[0]),
+            "content_sample": str(ordered[0].get("content_sample", ""))[: min(max_doc_chars, max_total_chars)],
+        }
+    ]
+
+
 def synthesize_query_answer(question: str, reread_docs: list[dict[str, Any]], client: OpenAI, model: str) -> dict:
     """Ask the LLM to answer using only the re-read candidate documents."""
     fallback_files = [
@@ -586,6 +517,8 @@ def synthesize_query_answer(question: str, reread_docs: list[dict[str, Any]], cl
             "relevant_files": [],
         }
 
+    docs_for_prompt = _prepare_docs_for_synthesis(reread_docs)
+
     try:
         resp = client.chat.completions.create(
             model=model,
@@ -595,7 +528,7 @@ def synthesize_query_answer(question: str, reread_docs: list[dict[str, Any]], cl
                     "role": "user",
                     "content": ANSWER_PROMPT.format(
                         question=question.strip(),
-                        candidate_context=_build_candidate_context(reread_docs),
+                        candidate_context=_build_candidate_context(docs_for_prompt),
                     ),
                 },
             ],
@@ -604,13 +537,16 @@ def synthesize_query_answer(question: str, reread_docs: list[dict[str, Any]], cl
         )
         raw = resp.choices[0].message.content or ""
         answer = _safe_json_loads(raw, fallback)
-    except Exception:
+    except Exception as exc:
         answer = fallback
+        answer["gaps"] = f"Layer 4 synthesis request failed: {exc}"
 
     answer.setdefault("answer", fallback["answer"])
     answer.setdefault("confidence", "Low")
     answer.setdefault("gaps", "")
     answer.setdefault("relevant_files", fallback_files)
+    if re.search(r"[\u4e00-\u9fff]", str(answer.get("gaps", ""))):
+        answer["gaps"] = "Some uncertainty remains due to limited or conflicting evidence across the reviewed files."
     return answer
 
 
@@ -635,13 +571,9 @@ def layer4_query(
         }
 
     plan = {
-        "mode": "llm_binary_relevance",
+        "mode": "pure_llm_retrieval",
         "intent": question.strip(),
-        "search_terms": [],
-        "domain_hints": [],
-        "asset_hints": [],
-        "lifecycle_hints": [],
-        "answer_type": "unknown",
+        "notes": "LLM batch routing + LLM binary relevance; no keyword/BM25 retrieval.",
     }
     candidates = rank_candidate_rows(
         processed_df,
@@ -650,8 +582,9 @@ def layer4_query(
         model=model,
         top_k=max(top_k, 10),
     )
-    deep_read_candidates = select_files_for_deep_read(question, candidates, client=client, model=model, max_select=reread_k)
-    reread_docs = reread_candidate_files(deep_read_candidates, max_files=reread_k)
+    # Read all retrieved candidates (not a tiny subset) before synthesis.
+    deep_read_candidates = candidates.copy()
+    reread_docs = reread_candidate_files(deep_read_candidates, max_files=max(1, len(deep_read_candidates)))
     answer = synthesize_query_answer(question, reread_docs, client=client, model=model)
 
     return {
