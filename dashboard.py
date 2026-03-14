@@ -185,10 +185,22 @@ if layer4_result:
     with st.expander("Show retrieval details", expanded=False):
         search_plan = layer4_result.get("search_plan", {})
         if search_plan:
-            st.json(search_plan)
+            terms = search_plan.get("search_terms", [])
+            domains = search_plan.get("domain_hints", [])
+            assets = search_plan.get("asset_hints", [])
+            st.markdown(
+                f"**Search terms used:** `{'` `'.join(terms) if terms else '—'}`  \n"
+                f"**Domain hints:** `{'` `'.join(domains) if domains else '—'}`  \n"
+                f"**Asset hints:** `{'` `'.join(assets) if assets else '—'}`  \n"
+                f"**Intent:** {search_plan.get('intent', '—')}"
+            )
         candidates = layer4_result.get("candidates", [])
         if candidates:
-            st.dataframe(pd.DataFrame(candidates), use_container_width=True, height=220)
+            st.markdown("**Candidate scores** (higher = more relevant)")
+            cdf = pd.DataFrame(candidates)
+            if "_query_score" in cdf.columns:
+                cdf = cdf.sort_values("_query_score", ascending=False)
+            st.dataframe(cdf, use_container_width=True, height=220)
 
 st.divider()
 

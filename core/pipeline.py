@@ -28,7 +28,7 @@ FIELDNAMES = [
     "filename", "format", "file_path", "size_kb",
     "extraction_coverage", "is_data_hint",
     "information_type", "year", "domain", "scale", "lifecycle",
-    "asset_type", "short_summary",
+    "asset_type", "short_summary", "keywords",
     "governance", "confidentiality", "confidence",
     "age_warning", "review_priority", "action", "review_reasons",
     "_reasoning", "llm_status", "processed_at",

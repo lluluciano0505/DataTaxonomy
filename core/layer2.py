@@ -731,6 +731,13 @@ SHORT_SUMMARY:
   Good:  "Architecture floor plan at Construction Documents stage for Zone B."
   Bad:   "This file contains architectural information."
 
+KEYWORDS:
+  5-8 concise English terms (lowercase, no punctuation) useful for later archive
+  search, covering: main topic, discipline, project location or zone references,
+  key document type, and phase. Think about what a researcher would type to find
+  this file. If the filename is in Danish or another language, include the English
+  translation of key words.
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 RESPONSE FORMAT
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -747,7 +754,8 @@ Return ONLY this JSON object, nothing else:
   "asset_type":       "<value>",
   "year":             <YYYY or null>,
   "confidence":       "<High|Medium|Low>",
-  "short_summary":    "<sentence>"
+  "short_summary":    "<sentence>",
+  "keywords":         ["<term1>", "<term2>", "<term3>"]
 }}
 """
 
@@ -817,8 +825,8 @@ def layer2_domain(
     year_raw  = meta.get("year") or "null"
     year_disp = str(year_raw).replace(" (mtime)", " ⚠ OS date only") if year_raw else "null"
 
-    # ── Content sample: raise cap to 1400 chars ───────────────────────────
-    content_sample = (meta.get("content_sample") or "")[:1400]
+    # ── Content sample: raise cap to 3000 chars ────────────────────────────────
+    content_sample = (meta.get("content_sample") or "")[:3000]
     # Indent each line for visual separation in the prompt block
     content_indented = "\n".join("  " + line for line in content_sample.splitlines()) if content_sample else "  (no content extractable)"
 

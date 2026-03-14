@@ -10,6 +10,7 @@ Given a user question, Layer 4:
 from __future__ import annotations
 
 import json
+import math
 import re
 from pathlib import Path
 from typing import Any
@@ -44,8 +45,15 @@ Return ONLY JSON with this shape:
 
 Rules:
 - Keep search_terms concise and retrieval-oriented.
-- Include both the original language and likely English project-archive terms when useful.
-- Domain hints must be from likely archive taxonomy such as Landscape & Public Realm, Urban Planning & Massing, Architecture & Buildings, Environment & Climate, Mobility & Transport, Administrative & Legal, Project Management, Reference & Research.
+- CRITICAL: The archive files are in Danish and English. If the question is in
+  Chinese or any other language, you MUST translate every key concept into English
+  (and include relevant Danish equivalents if you know them) and add those
+  translations as additional entries in search_terms. Never leave search_terms
+  in only the question's language if that language is not Danish or English.
+  Example: Chinese question about timber → add "timber", "wood", "tr\xe6", "construction".
+- Domain hints must be from likely archive taxonomy such as Landscape & Public Realm,
+  Urban Planning & Massing, Architecture & Buildings, Environment & Climate,
+  Mobility & Transport, Administrative & Legal, Project Management, Reference & Research.
 - Asset hints should be values like Data, Document, Drawing, Media, Archive.
 - lifecycle_hints can be empty.
 - If unsure, return broad but useful hints instead of inventing specifics.
@@ -171,61 +179,110 @@ def build_search_plan(question: str, client: OpenAI, model: str) -> dict:
 
 
 def _score_text_match(text: str, search_terms: list[str], weight: float) -> float:
+    # kept for any external callers; not used in ranking anymore
     hay = (text or "").lower()
+    return sum(weight for t in search_terms if str(t or "").strip().lower() in hay)
+
+
+# ── BM25 retrieval ─────────────────────────────────────────────────────────
+_BM25_FIELDS = [
+    "filename", "keywords", "short_summary", "_reasoning",
+    "review_reasons", "information_type", "domain",
+    "lifecycle", "asset_type", "file_path",
+]
+
+
+def _build_bm25_corpus(df: pd.DataFrame) -> tuple[list[list[str]], float, Counter, int]:
+    """Tokenise every row into a combined doc and compute BM25 corpus stats."""
+    docs: list[list[str]] = []
+    for _, row in df.iterrows():
+        combined = " ".join(str(row.get(col, "")) for col in _BM25_FIELDS)
+        docs.append(_tokenize(combined))
+    N = len(docs)
+    df_freq: Counter = Counter()
+    for doc in docs:
+        df_freq.update(set(doc))
+    avg_dl = sum(len(d) for d in docs) / max(N, 1)
+    return docs, avg_dl, df_freq, N
+
+
+def _bm25_score(
+    query_tokens: list[str],
+    doc_tokens: list[str],
+    avg_dl: float,
+    df_freq: Counter,
+    N: int,
+    k1: float = 1.5,
+    b: float = 0.75,
+) -> float:
+    """BM25 score for one document against query tokens."""
+    if not query_tokens or not doc_tokens:
+        return 0.0
+    dl = len(doc_tokens)
+    tf_counts = Counter(doc_tokens)
     score = 0.0
-    for term in search_terms:
-        needle = str(term or "").strip().lower()
-        if not needle:
+    for term in query_tokens:
+        tf = tf_counts.get(term, 0)
+        if tf == 0:
             continue
-        if needle in hay:
-            score += weight
+        n_t = df_freq.get(term, 0)
+        idf = math.log((N - n_t + 0.5) / (n_t + 0.5) + 1.0)
+        tf_norm = (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * dl / max(avg_dl, 1)))
+        score += idf * tf_norm
     return score
 
 
 def rank_candidate_rows(df: pd.DataFrame, plan: dict, top_k: int = 8) -> pd.DataFrame:
-    """Score processed rows by query relevance using metadata and summaries."""
+    """Score processed rows by query relevance using BM25 + taxonomy hint bonuses."""
     if df.empty:
         return df.copy()
 
     ranked = df.copy()
-    search_terms = [str(x) for x in plan.get("search_terms", []) if str(x).strip()]
     domain_hints = {str(x).strip().lower() for x in plan.get("domain_hints", []) if str(x).strip()}
     asset_hints = {str(x).strip().lower() for x in plan.get("asset_hints", []) if str(x).strip()}
     lifecycle_hints = {str(x).strip().lower() for x in plan.get("lifecycle_hints", []) if str(x).strip()}
 
+    query_tokens = _tokenize(" ".join(str(x) for x in plan.get("search_terms", [])))
+
+    # Build BM25 corpus from all rows
+    docs, avg_dl, df_freq, N = _build_bm25_corpus(ranked)
+
     scores: list[float] = []
-    for _, row in ranked.iterrows():
-        score = 0.0
-        score += _score_text_match(str(row.get("filename", "")), search_terms, 4.0)
-        score += _score_text_match(str(row.get("short_summary", "")), search_terms, 3.5)
-        score += _score_text_match(str(row.get("review_reasons", "")), search_terms, 3.0)
-        score += _score_text_match(str(row.get("file_path", "")), search_terms, 2.5)
-        score += _score_text_match(str(row.get("domain", "")), search_terms, 2.0)
-        score += _score_text_match(str(row.get("lifecycle", "")), search_terms, 1.5)
-        score += _score_text_match(str(row.get("asset_type", "")), search_terms, 1.5)
-        score += _score_text_match(str(row.get("format", "")), search_terms, 1.0)
+    for i, (_, row) in enumerate(ranked.iterrows()):
+        score = _bm25_score(query_tokens, docs[i], avg_dl, df_freq, N)
 
-        if str(row.get("domain", "")).strip().lower() in domain_hints:
-            score += 5.0
-        if str(row.get("asset_type", "")).strip().lower() in asset_hints:
-            score += 3.0
-        if str(row.get("lifecycle", "")).strip().lower() in lifecycle_hints:
-            score += 2.5
+        # Taxonomy hint bonuses (partial match)
+        row_domain = str(row.get("domain", "")).strip().lower()
+        for hint in domain_hints:
+            if hint in row_domain or row_domain in hint:
+                score += 3.0
+                break
 
-        review_priority = str(row.get("review_priority", "")).strip().lower()
-        if review_priority in {"critical", "urgent", "high"}:
+        row_asset = str(row.get("asset_type", "")).strip().lower()
+        for hint in asset_hints:
+            if hint in row_asset or row_asset in hint:
+                score += 2.0
+                break
+
+        row_lifecycle = str(row.get("lifecycle", "")).strip().lower()
+        for hint in lifecycle_hints:
+            if hint in row_lifecycle or row_lifecycle in hint:
+                score += 1.5
+                break
+
+        if str(row.get("review_priority", "")).strip().lower() in {"critical", "urgent", "high"}:
             score += 0.5
-
-        confidence = str(row.get("confidence", "")).strip().lower()
-        if confidence == "high":
-            score += 0.5
-        elif confidence == "medium":
-            score += 0.2
+        if str(row.get("confidence", "")).strip().lower() == "high":
+            score += 0.3
 
         scores.append(score)
 
     ranked["_query_score"] = scores
-    ranked = ranked.sort_values(["_query_score", "confidence", "year"], ascending=[False, False, False], na_position="last")
+    ranked = ranked.sort_values(
+        ["_query_score", "confidence", "year"],
+        ascending=[False, False, False],
+        na_position="last",
+    )
 
     positive = ranked[ranked["_query_score"] > 0].head(top_k)
     if not positive.empty:
@@ -233,7 +290,7 @@ def rank_candidate_rows(df: pd.DataFrame, plan: dict, top_k: int = 8) -> pd.Data
     return ranked.head(min(top_k, len(ranked)))
 
 
-def _read_full_file_content(file_path: Path, max_chars: int = 12000) -> tuple[str, str]:
+def _read_full_file_content(file_path: Path, max_chars: int = 24000) -> tuple[str, str]:
     """Read a deeper/full content slice for query answering, beyond layer1 short samples."""
     ext = file_path.suffix.lower()
 
@@ -284,14 +341,14 @@ def _read_full_file_content(file_path: Path, max_chars: int = 12000) -> tuple[st
 
         if ext == ".csv":
             df = pd.read_csv(file_path, encoding="utf-8", errors="replace")
-            raw = f"Columns: {list(df.columns)}\n{df.head(80).to_string()}"
+            raw = f"Columns: {list(df.columns)}\n{df.head(200).to_string()}"
             return raw[:max_chars], "CSV deeper tabular read"
 
         if ext in {".xlsx", ".xls"}:
             xl = pd.ExcelFile(str(file_path))
             blocks: list[str] = [f"Sheets: {xl.sheet_names}"]
-            for sheet in xl.sheet_names[:3]:
-                df = pd.read_excel(file_path, sheet_name=sheet, nrows=40)
+            for sheet in xl.sheet_names[:5]:
+                df = pd.read_excel(file_path, sheet_name=sheet, nrows=80)
                 blocks.append(f"[Sheet: {sheet}]\nColumns: {list(df.columns)}\n{df.to_string()}")
                 if sum(len(b) for b in blocks) >= max_chars:
                     break
@@ -402,7 +459,7 @@ def reread_candidate_files(candidates: pd.DataFrame, max_files: int = 6) -> list
                 "lifecycle": row.get("lifecycle", "Unknown"),
                 "summary": row.get("short_summary", ""),
                 "coverage": coverage or reread.get("extraction_coverage", ""),
-                "content_sample": content_sample[:12000],
+                "content_sample": content_sample[:24000],
                 "query_score": float(row.get("_query_score", 0)),
             })
         except Exception as exc:

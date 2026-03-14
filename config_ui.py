@@ -39,11 +39,20 @@ def choose_directory_mac(prompt: str = "Select a folder") -> str | None:
         return None
 
 
-def pick_directory_into_state(state_key: str, prompt: str) -> None:
-    """Open folder picker and write the chosen path into a Streamlit state key."""
+def pick_directory_into_state(state_key: str, prompt: str, append_csv_filename: bool = False) -> None:
+    """Open folder picker and write the chosen path into a Streamlit state key.
+    If append_csv_filename is True, combines the chosen folder with the existing
+    filename from state (or 'output.csv' as fallback) to preserve the .csv name.
+    """
     selected_dir = choose_directory_mac(prompt)
     if selected_dir:
-        st.session_state[state_key] = selected_dir.rstrip("/")
+        selected_dir = selected_dir.rstrip("/")
+        if append_csv_filename:
+            existing = st.session_state.get(state_key, "")
+            filename = Path(existing).name if existing and existing.lower().endswith(".csv") else "output.csv"
+            st.session_state[state_key] = str(Path(selected_dir) / filename)
+        else:
+            st.session_state[state_key] = selected_dir
     else:
         st.session_state["path_picker_notice"] = "No folder selected."
 
@@ -313,14 +322,11 @@ with tab1:
     st.divider()
     st.subheader("Project Paths")
     paths = config.get("paths", {})
-    output_dir_default, output_name_default = split_output_csv_path(paths.get("output_csv", "test_output.csv"))
 
     if "input_dir_value" not in st.session_state:
         st.session_state["input_dir_value"] = paths.get("input_dir", "")
-    if "output_dir_value" not in st.session_state or st.session_state["output_dir_value"] == st.session_state.get("output_name_value"):
-        st.session_state["output_dir_value"] = output_dir_default
-    if "output_name_value" not in st.session_state:
-        st.session_state["output_name_value"] = output_name_default
+    if "output_csv_value" not in st.session_state:
+        st.session_state["output_csv_value"] = paths.get("output_csv", "test_output.csv")
 
     p1, p2 = st.columns(2)
     with p1:
@@ -337,42 +343,21 @@ with tab1:
             args=("input_dir_value", "Choose the input directory for processing"),
         )
     with p2:
-        output_dir = st.text_input(
-            "Output Folder",
-            key="output_dir_value",
-            help="Folder where the results CSV will be saved"
+        output_csv = st.text_input(
+            "Output CSV",
+            key="output_csv_value",
+            help="Full path for the results CSV, e.g. /Users/me/project/output.csv"
         )
         st.button(
             "📁 Choose Output Folder",
             key="pick_output_dir",
             use_container_width=True,
             on_click=pick_directory_into_state,
-            args=("output_dir_value", "Choose the output folder for results"),
+            args=("output_csv_value", "Choose the output folder for results", True),
         )
 
-        output_name = st.text_input(
-            "Output CSV Filename",
-            key="output_name_value",
-            help="CSV filename, for example test_output.csv"
-        )
-
-    output_csv = build_output_csv_path(output_dir, output_name)
-    st.caption(f"Result path: {output_csv}")
     if st.session_state.get("path_picker_notice"):
         st.info(st.session_state.pop("path_picker_notice"))
-
-    b1, b2 = st.columns(2)
-    with b2:
-        if st.button("📁 Reveal Output Folder in Finder", key="open_output_dir", use_container_width=True):
-            try:
-                target = Path(output_dir).expanduser() if output_dir else None
-                if target and target.exists():
-                    subprocess.Popen(["open", str(target)])
-                    st.success(f"Opened in Finder: {target}")
-                else:
-                    st.warning("Output folder does not exist yet. It will be created on first run.")
-            except Exception as e:
-                st.error(f"Could not open: {e}")
     
     # Save button
     if st.button("💾 Save Project Info", key="save_project", use_container_width=True):
@@ -387,7 +372,7 @@ with tab1:
         }
         config["paths"] = {
             "input_dir": input_dir,
-            "output_csv": build_output_csv_path(output_dir, output_name),
+            "output_csv": output_csv,
         }
         save_config(config)
 

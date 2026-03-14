@@ -23,8 +23,8 @@ paths:
   input_dir: /Users/luchieeoo/Desktop/Henning Larsen/Fælledby
   output_csv: test_output.csv
 processing:
-  sample_n: 100
-  model: google/gemini-2.0-flash-001
+  sample_n: 110
+  model: openai/gpt-4-turbo
   parallel_workers: 16
   api_timeout: 30
 dashboard:
